@@ -27,6 +27,7 @@ STARTS_CHANNELS = {
 }
 
 REFRESH_ROLES = {1510604555040198816, 1510601395999346819}
+ADMIN_ROLE_ID = 1510608237878181958
 
 def get_collection():
     mongo_client = MongoClient(os.getenv("MONGO_URL"), serverSelectionTimeoutMS=5000)
@@ -81,14 +82,13 @@ class ChannelModal(Modal, title="Создать канал"):
         category = interaction.guild.get_channel(category_id)
         name = self.channel_name.value.strip().replace(" ", "-").lower()
 
+        admin_role = interaction.guild.get_role(ADMIN_ROLE_ID)
         overwrites = {
             interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True
-            )
+            interaction.user: discord.PermissionOverwrite(view_channel=True),
         }
+        if admin_role:
+            overwrites[admin_role] = discord.PermissionOverwrite(view_channel=True)
 
         channel = await interaction.guild.create_text_channel(
             name, category=category, overwrites=overwrites
@@ -115,6 +115,9 @@ async def starts(interaction: discord.Interaction):
     for role_id, channel_id in STARTS_CHANNELS.items():
         channel = interaction.guild.get_channel(channel_id)
         if channel:
+            async for message in channel.history(limit=100):
+                if message.author == bot.user:
+                    await message.delete()
             await channel.send("freshboyswag", view=PanelView())
     await interaction.followup.send("сообщения обновлены", ephemeral=True)
 
