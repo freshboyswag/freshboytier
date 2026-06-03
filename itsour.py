@@ -127,10 +127,11 @@ async def refresh(interaction: discord.Interaction, user: str):
 @bot.event
 async def on_ready():
     bot.add_view(PanelView())
-    await bot.tree.sync()
-    for guild in bot.guilds:
-        await bot.tree.sync(guild=guild)
-    print(f"Бот запущен: {bot.user}")
+    try:
+        synced = await bot.tree.sync()
+        print(f"Бот запущен: {bot.user}, синхронизировано {len(synced)} команд")
+    except Exception as e:
+        print(f"Ошибка синхронизации: {e}")
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
