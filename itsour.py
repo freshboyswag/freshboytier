@@ -2,14 +2,16 @@ import discord
 from discord.ext import commands
 from discord.ui import Modal, TextInput, View
 import os
-import json
 import re
+from pymongo import MongoClient
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-DB_FILE = "channels.json"
+client = MongoClient(os.getenv("MONGO_URL"))
+db = client["freshboyswag"]
+collection = db["channels"]
 
 ROLES_CATEGORIES = {
     1510603939664629891: 1510952722214551653,  # test
@@ -26,16 +28,6 @@ STARTS_CHANNELS = {
 }
 
 REFRESH_ROLES = {1510604555040198816, 1510601395999346819}
-
-def load_db():
-    if not os.path.exists(DB_FILE):
-        return {}
-    with open(DB_FILE, "r") as f:
-        return json.load(f)
-
-def save_db(data):
-    with open(DB_FILE, "w") as f:
-        json.dump(data, f)
 
 def get_category_for_user(member):
     for role in member.roles:
@@ -55,11 +47,11 @@ class ChannelModal(Modal, title="Создать канал"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        db = load_db()
         user_id = str(interaction.user.id)
+        existing_entry = collection.find_one({"user_id": user_id})
 
-        if user_id in db:
-            existing = interaction.guild.get_channel(db[user_id])
+        if existing_entry:
+            existing = interaction.guild.get_channel(existing_entry["channel_id"])
             if existing:
                 await interaction.response.send_message(
                     f"❌ Ты уже регал канал: {existing.mention}", ephemeral=True
@@ -77,8 +69,7 @@ class ChannelModal(Modal, title="Создать канал"):
         name = self.channel_name.value.strip().replace(" ", "-").lower()
         channel = await interaction.guild.create_text_channel(name, category=category)
 
-        db[user_id] = channel.id
-        save_db(db)
+        collection.insert_one({"user_id": user_id, "channel_id": channel.id})
 
         await interaction.response.send_message(
             f"✅ Канал {channel.mention} создан!", ephemeral=True
@@ -110,7 +101,6 @@ async def refresh(interaction: discord.Interaction, user: str):
         )
         return
 
-    # Определяем айди — упоминание или голый айди
     match = re.search(r"\d{17,20}", user)
     if not match:
         await interaction.response.send_message(
@@ -119,16 +109,13 @@ async def refresh(interaction: discord.Interaction, user: str):
         return
 
     user_id = match.group()
-    db = load_db()
+    result = collection.delete_one({"user_id": user_id})
 
-    if user_id not in db:
+    if result.deleted_count == 0:
         await interaction.response.send_message(
             "❌ Этот юзер ещё не регал канал", ephemeral=True
         )
         return
-
-    del db[user_id]
-    save_db(db)
 
     await interaction.response.send_message(
         "квота на создание личного канала сброшена", ephemeral=True
