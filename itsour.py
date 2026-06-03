@@ -12,13 +12,6 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-ROLES_CATEGORIES = {
-    1510603939664629891: 1510952722214551653,  # test
-    1510603296321306774: 1510952983867686922,  # tier s
-    1510603326331293846: 1510953111089451079,  # tier a
-    1510603348276023547: 1510953268799606865,  # tier b
-}
-
 STARTS_CHANNELS = {
     1510603939664629891: 1510952816334733343,  # test
     1510603296321306774: 1510953048753836073,  # tier s
@@ -33,12 +26,6 @@ def get_collection():
     mongo_client = MongoClient(os.getenv("MONGO_URL"), serverSelectionTimeoutMS=5000)
     db = mongo_client["freshboyswag"]
     return db["channels"]
-
-def get_category_for_user(member):
-    for role in member.roles:
-        if role.id in ROLES_CATEGORIES:
-            return ROLES_CATEGORIES[role.id]
-    return None
 
 def has_refresh_role(member):
     return any(role.id in REFRESH_ROLES for role in member.roles)
@@ -72,14 +59,13 @@ class ChannelModal(Modal, title="Создать канал"):
                 )
                 return
 
-        category_id = get_category_for_user(interaction.user)
-        if not category_id:
+        category = interaction.channel.category
+        if not category:
             await interaction.response.send_message(
-                "нет нужной роли", ephemeral=True
+                "канал не в категории", ephemeral=True
             )
             return
 
-        category = interaction.guild.get_channel(category_id)
         name = self.channel_name.value.strip().replace(" ", "-").lower()
 
         admin_role = interaction.guild.get_role(ADMIN_ROLE_ID)
