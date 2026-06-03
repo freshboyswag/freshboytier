@@ -74,13 +74,25 @@ class ChannelModal(Modal, title="Создать канал"):
         category_id = get_category_for_user(interaction.user)
         if not category_id:
             await interaction.response.send_message(
-                "❌ У тебя нет нужной роли!", ephemeral=True
+                "нет нужной роли", ephemeral=True
             )
             return
 
         category = interaction.guild.get_channel(category_id)
         name = self.channel_name.value.strip().replace(" ", "-").lower()
-        channel = await interaction.guild.create_text_channel(name, category=category)
+
+        overwrites = {
+            interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True
+            )
+        }
+
+        channel = await interaction.guild.create_text_channel(
+            name, category=category, overwrites=overwrites
+        )
 
         collection.insert_one({"user_id": user_id, "channel_id": channel.id})
 
