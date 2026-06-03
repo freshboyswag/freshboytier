@@ -128,6 +128,8 @@ async def refresh(interaction: discord.Interaction, user: str):
 async def on_ready():
     bot.add_view(PanelView())
     await bot.tree.sync()
+    for guild in bot.guilds:
+        await bot.tree.sync(guild=guild)
     print(f"Бот запущен: {bot.user}")
 
 class Handler(BaseHTTPRequestHandler):
