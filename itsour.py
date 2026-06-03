@@ -44,8 +44,8 @@ def has_refresh_role(member):
 
 class ChannelModal(Modal, title="Создать канал"):
     channel_name = TextInput(
-        label="Название канала",
-        placeholder="мой-канал",
+        label="название",
+        placeholder="ник в игре",
         min_length=1,
         max_length=100
     )
@@ -58,7 +58,7 @@ class ChannelModal(Modal, title="Создать канал"):
             existing_entry = collection.find_one({"user_id": user_id})
         except Exception as e:
             await interaction.response.send_message(
-                "❌ Ошибка базы данных, попробуй позже", ephemeral=True
+                "ошибка базы данных", ephemeral=True
             )
             print(f"MongoDB ошибка: {e}")
             return
@@ -67,7 +67,7 @@ class ChannelModal(Modal, title="Создать канал"):
             existing = interaction.guild.get_channel(existing_entry["channel_id"])
             if existing:
                 await interaction.response.send_message(
-                    f"❌ Ты уже регал канал: {existing.mention}", ephemeral=True
+                    f"у тебя уже есть канал: {existing.mention}", ephemeral=True
                 )
                 return
 
@@ -85,7 +85,7 @@ class ChannelModal(Modal, title="Создать канал"):
         collection.insert_one({"user_id": user_id, "channel_id": channel.id})
 
         await interaction.response.send_message(
-            f"✅ Канал {channel.mention} создан!", ephemeral=True
+            f"канал {channel.mention} создан!", ephemeral=True
         )
 
 class PanelView(View):
@@ -110,14 +110,14 @@ async def starts(interaction: discord.Interaction):
 async def refresh(interaction: discord.Interaction, user: str):
     if not has_refresh_role(interaction.user):
         await interaction.response.send_message(
-            "❌ У тебя нет прав на эту команду!", ephemeral=True
+            "нет прав", ephemeral=True
         )
         return
 
     match = re.search(r"\d{17,20}", user)
     if not match:
         await interaction.response.send_message(
-            "❌ Укажи упоминание или айди юзера", ephemeral=True
+            "тег или айди", ephemeral=True
         )
         return
 
@@ -128,14 +128,14 @@ async def refresh(interaction: discord.Interaction, user: str):
         result = collection.delete_one({"user_id": user_id})
     except Exception as e:
         await interaction.response.send_message(
-            "❌ Ошибка базы данных, попробуй позже", ephemeral=True
+            "ошибка базы данных", ephemeral=True
         )
         print(f"MongoDB ошибка: {e}")
         return
 
     if result.deleted_count == 0:
         await interaction.response.send_message(
-            "❌ Этот юзер ещё не регал канал", ephemeral=True
+            "он еще не регал", ephemeral=True
         )
         return
 
@@ -153,9 +153,9 @@ async def on_ready():
 async def sync(ctx):
     try:
         synced = await bot.tree.sync()
-        await ctx.send(f"✅ Синхронизировано {len(synced)} команд")
+        await ctx.send(f"синхронизировано {len(synced)} команд")
     except Exception as e:
-        await ctx.send(f"❌ Ошибка: {e}")
+        await ctx.send(f"ошибка: {e}")
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
