@@ -12,10 +12,6 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-mongo_client = MongoClient(os.getenv("MONGO_URL"))
-db = mongo_client["freshboyswag"]
-collection = db["channels"]
-
 ROLES_CATEGORIES = {
     1510603939664629891: 1510952722214551653,  # test
     1510603296321306774: 1510952983867686922,  # tier s
@@ -31,6 +27,11 @@ STARTS_CHANNELS = {
 }
 
 REFRESH_ROLES = {1510604555040198816, 1510601395999346819}
+
+def get_collection():
+    mongo_client = MongoClient(os.getenv("MONGO_URL"), serverSelectionTimeoutMS=5000)
+    db = mongo_client["freshboyswag"]
+    return db["channels"]
 
 def get_category_for_user(member):
     for role in member.roles:
@@ -51,7 +52,16 @@ class ChannelModal(Modal, title="Создать канал"):
 
     async def on_submit(self, interaction: discord.Interaction):
         user_id = str(interaction.user.id)
-        existing_entry = collection.find_one({"user_id": user_id})
+
+        try:
+            collection = get_collection()
+            existing_entry = collection.find_one({"user_id": user_id})
+        except Exception as e:
+            await interaction.response.send_message(
+                "❌ Ошибка базы данных, попробуй позже", ephemeral=True
+            )
+            print(f"MongoDB ошибка: {e}")
+            return
 
         if existing_entry:
             existing = interaction.guild.get_channel(existing_entry["channel_id"])
@@ -112,7 +122,16 @@ async def refresh(interaction: discord.Interaction, user: str):
         return
 
     user_id = match.group()
-    result = collection.delete_one({"user_id": user_id})
+
+    try:
+        collection = get_collection()
+        result = collection.delete_one({"user_id": user_id})
+    except Exception as e:
+        await interaction.response.send_message(
+            "❌ Ошибка базы данных, попробуй позже", ephemeral=True
+        )
+        print(f"MongoDB ошибка: {e}")
+        return
 
     if result.deleted_count == 0:
         await interaction.response.send_message(
