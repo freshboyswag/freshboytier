@@ -4,13 +4,16 @@ from discord.ui import Modal, TextInput, View
 import os
 import re
 from pymongo import MongoClient
+from threading import Thread
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-client = MongoClient(os.getenv("MONGO_URL"))
-db = client["freshboyswag"]
+mongo_client = MongoClient(os.getenv("MONGO_URL"))
+db = mongo_client["freshboyswag"]
 collection = db["channels"]
 
 ROLES_CATEGORIES = {
@@ -126,5 +129,18 @@ async def on_ready():
     bot.add_view(PanelView())
     await bot.tree.sync()
     print(f"Бот запущен: {bot.user}")
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args):
+        pass
+
+def run_server():
+    HTTPServer(("0.0.0.0", 10000), Handler).serve_forever()
+
+Thread(target=run_server, daemon=True).start()
 
 bot.run(os.getenv("TOKEN"))
