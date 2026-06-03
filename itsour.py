@@ -146,11 +146,16 @@ async def refresh(interaction: discord.Interaction, user: str):
 @bot.event
 async def on_ready():
     bot.add_view(PanelView())
+    print(f"Бот запущен: {bot.user}")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def sync(ctx):
     try:
         synced = await bot.tree.sync()
-        print(f"Бот запущен: {bot.user}, синхронизировано {len(synced)} команд")
+        await ctx.send(f"✅ Синхронизировано {len(synced)} команд")
     except Exception as e:
-        print(f"Ошибка синхронизации: {e}")
+        await ctx.send(f"❌ Ошибка: {e}")
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
