@@ -55,15 +55,10 @@ class ChannelModal(Modal, title="Создать канал"):
             return
 
         if existing_entry:
-            existing = interaction.guild.get_channel(existing_entry["channel_id"])
-            if existing:
-                await interaction.followup.send(
-                    f"у тебя уже есть канал: {existing.mention}", ephemeral=True
-                )
-                return
-            else:
-                print(f"[DEBUG] Канал не найден на сервере, удаляю запись")
-                collection.delete_one({"user_id": user_id})
+            await interaction.followup.send(
+                "у тебя уже есть канал или квота израсходована", ephemeral=True
+            )
+            return
 
         category = interaction.channel.category
         if not category:
@@ -143,19 +138,21 @@ async def refresh(interaction: discord.Interaction, user: str):
         "квота на создание личного канала сброшена", ephemeral=True
     )
 
+@bot.tree.command(name="sync", description="Синхронизировать команды")
+@commands.has_permissions(administrator=True)
+async def sync(interaction: discord.Interaction):
+    try:
+        synced = await bot.tree.sync()
+        await interaction.response.send_message(
+            f"синхронизировано {len(synced)} команд", ephemeral=True
+        )
+    except Exception as e:
+        await interaction.response.send_message(f"ошибка: {e}", ephemeral=True)
+
 @bot.event
 async def on_ready():
     bot.add_view(PanelView())
     print(f"Бот запущен: {bot.user}")
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def sync(ctx):
-    try:
-        synced = await bot.tree.sync()
-        await ctx.send(f"синхронизировано {len(synced)} команд")
-    except Exception as e:
-        await ctx.send(f"ошибка: {e}")
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
