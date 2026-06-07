@@ -21,11 +21,10 @@ STARTS_CHANNELS = {
 
 REFRESH_ROLES = {1510604555040198816, 1510601395999346819}
 ADMIN_ROLE_ID = 1510608237878181958
-
 MONGO_URL = os.getenv("MONGO_URL")
 
 def get_collection():
-    mongo_client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
+    mongo_client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=3000)
     db = mongo_client["freshboyswag"]
     return db["channels"]
 
@@ -41,6 +40,8 @@ class ChannelModal(Modal, title="Создать канал"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
         user_id = str(interaction.user.id)
         print(f"[DEBUG] Нажата кнопка, user_id: {user_id}")
 
@@ -49,28 +50,24 @@ class ChannelModal(Modal, title="Создать канал"):
             existing_entry = collection.find_one({"user_id": user_id})
             print(f"[DEBUG] Запись в БД: {existing_entry}")
         except Exception as e:
-            await interaction.response.send_message(
-                "ошибка базы данных", ephemeral=True
-            )
+            await interaction.followup.send("ошибка базы данных", ephemeral=True)
             print(f"[ERROR] MongoDB ошибка: {e}")
             return
 
         if existing_entry:
             existing = interaction.guild.get_channel(existing_entry["channel_id"])
             if existing:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     f"у тебя уже есть канал: {existing.mention}", ephemeral=True
                 )
                 return
             else:
-                print(f"[DEBUG] Канал {existing_entry['channel_id']} не найден на сервере, удаляю запись")
+                print(f"[DEBUG] Канал не найден на сервере, удаляю запись")
                 collection.delete_one({"user_id": user_id})
 
         category = interaction.channel.category
         if not category:
-            await interaction.response.send_message(
-                "канал не в категории", ephemeral=True
-            )
+            await interaction.followup.send("канал не в категории", ephemeral=True)
             return
 
         name = self.channel_name.value.strip().replace(" ", "-").lower()
@@ -90,9 +87,7 @@ class ChannelModal(Modal, title="Создать канал"):
         result = collection.insert_one({"user_id": user_id, "channel_id": channel.id})
         print(f"[DEBUG] Запись сохранена: {result.inserted_id}")
 
-        await interaction.response.send_message(
-            f"канал {channel.mention} создан!", ephemeral=True
-        )
+        await interaction.followup.send(f"канал {channel.mention} создан!", ephemeral=True)
 
 class PanelView(View):
     def __init__(self):
@@ -118,16 +113,12 @@ async def starts(interaction: discord.Interaction):
 @bot.tree.command(name="refresh", description="Сбросить квоту на создание канала")
 async def refresh(interaction: discord.Interaction, user: str):
     if not has_refresh_role(interaction.user):
-        await interaction.response.send_message(
-            "нет прав", ephemeral=True
-        )
+        await interaction.response.send_message("нет прав", ephemeral=True)
         return
 
     match = re.search(r"\d{17,20}", user)
     if not match:
-        await interaction.response.send_message(
-            "тег или айди", ephemeral=True
-        )
+        await interaction.response.send_message("тег или айди", ephemeral=True)
         return
 
     user_id = match.group()
@@ -140,16 +131,12 @@ async def refresh(interaction: discord.Interaction, user: str):
         result = collection.delete_one({"user_id": user_id})
         print(f"[DEBUG] Удалено записей: {result.deleted_count}")
     except Exception as e:
-        await interaction.response.send_message(
-            "ошибка базы данных", ephemeral=True
-        )
+        await interaction.response.send_message("ошибка базы данных", ephemeral=True)
         print(f"[ERROR] MongoDB ошибка: {e}")
         return
 
     if result.deleted_count == 0:
-        await interaction.response.send_message(
-            "он еще не регал", ephemeral=True
-        )
+        await interaction.response.send_message("он еще не регал", ephemeral=True)
         return
 
     await interaction.response.send_message(
