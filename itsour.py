@@ -140,7 +140,7 @@ async def refresh(interaction: discord.Interaction, user: str):
 
 @bot.tree.command(name="sync", description="Синхронизировать команды")
 @commands.has_permissions(administrator=True)
-async def sync(interaction: discord.Interaction):
+async def sync_slash(interaction: discord.Interaction):
     try:
         synced = await bot.tree.sync()
         await interaction.response.send_message(
@@ -148,6 +148,15 @@ async def sync(interaction: discord.Interaction):
         )
     except Exception as e:
         await interaction.response.send_message(f"ошибка: {e}", ephemeral=True)
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def sync(ctx):
+    try:
+        synced = await bot.tree.sync()
+        await ctx.send(f"синхронизировано {len(synced)} команд")
+    except Exception as e:
+        await ctx.send(f"ошибка: {e}")
 
 @bot.event
 async def on_ready():
