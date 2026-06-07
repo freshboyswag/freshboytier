@@ -22,8 +22,10 @@ STARTS_CHANNELS = {
 REFRESH_ROLES = {1510604555040198816, 1510601395999346819}
 ADMIN_ROLE_ID = 1510608237878181958
 
+MONGO_URL = os.getenv("MONGO_URL")
+
 def get_collection():
-    mongo_client = MongoClient(os.getenv("MONGO_URL"), serverSelectionTimeoutMS=5000)
+    mongo_client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
     db = mongo_client["freshboyswag"]
     return db["channels"]
 
@@ -40,15 +42,17 @@ class ChannelModal(Modal, title="Создать канал"):
 
     async def on_submit(self, interaction: discord.Interaction):
         user_id = str(interaction.user.id)
+        print(f"[DEBUG] Нажата кнопка, user_id: {user_id}")
 
         try:
             collection = get_collection()
             existing_entry = collection.find_one({"user_id": user_id})
+            print(f"[DEBUG] Запись в БД: {existing_entry}")
         except Exception as e:
             await interaction.response.send_message(
                 "ошибка базы данных", ephemeral=True
             )
-            print(f"MongoDB ошибка: {e}")
+            print(f"[ERROR] MongoDB ошибка: {e}")
             return
 
         if existing_entry:
@@ -58,6 +62,9 @@ class ChannelModal(Modal, title="Создать канал"):
                     f"у тебя уже есть канал: {existing.mention}", ephemeral=True
                 )
                 return
+            else:
+                print(f"[DEBUG] Канал {existing_entry['channel_id']} не найден на сервере, удаляю запись")
+                collection.delete_one({"user_id": user_id})
 
         category = interaction.channel.category
         if not category:
@@ -80,7 +87,8 @@ class ChannelModal(Modal, title="Создать канал"):
             name, category=category, overwrites=overwrites
         )
 
-        collection.insert_one({"user_id": user_id, "channel_id": channel.id})
+        result = collection.insert_one({"user_id": user_id, "channel_id": channel.id})
+        print(f"[DEBUG] Запись сохранена: {result.inserted_id}")
 
         await interaction.response.send_message(
             f"канал {channel.mention} создан!", ephemeral=True
@@ -123,15 +131,19 @@ async def refresh(interaction: discord.Interaction, user: str):
         return
 
     user_id = match.group()
+    print(f"[DEBUG] Рефреш для user_id: {user_id}")
 
     try:
         collection = get_collection()
+        entry = collection.find_one({"user_id": user_id})
+        print(f"[DEBUG] Запись перед удалением: {entry}")
         result = collection.delete_one({"user_id": user_id})
+        print(f"[DEBUG] Удалено записей: {result.deleted_count}")
     except Exception as e:
         await interaction.response.send_message(
             "ошибка базы данных", ephemeral=True
         )
-        print(f"MongoDB ошибка: {e}")
+        print(f"[ERROR] MongoDB ошибка: {e}")
         return
 
     if result.deleted_count == 0:
@@ -167,7 +179,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 def run_server():
-    HTTPServer(("0.0.0.0", 10000), Handler).serve_forever()
+    HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
 
 Thread(target=run_server, daemon=True).start()
 
