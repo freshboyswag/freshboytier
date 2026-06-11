@@ -141,8 +141,10 @@ def build_embed() -> discord.Embed:
 
 
 @bot.tree.command(name="starts", description="Отправить панель в канал")
-@commands.has_permissions(administrator=True)
 async def starts(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("нет прав", ephemeral=True)
+        return
     await interaction.response.defer(ephemeral=True)
 
     channel = interaction.guild.get_channel(PANEL_CHANNEL_ID)
@@ -193,8 +195,10 @@ async def refresh(interaction: discord.Interaction, user: str):
 
 
 @bot.tree.command(name="sync", description="Синхронизировать команды")
-@commands.has_permissions(administrator=True)
 async def sync_slash(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("нет прав", ephemeral=True)
+        return
     try:
         synced = await bot.tree.sync()
         await interaction.response.send_message(
