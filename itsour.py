@@ -609,6 +609,17 @@ async def sync(ctx):
         await ctx.send(f"ошибка: {e}")
 
 
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def clear_global(ctx):
+    try:
+        bot.tree.clear_commands(guild=None)
+        await bot.tree.sync()
+        await ctx.send("глобальные команды очищены")
+    except Exception as e:
+        await ctx.send(f"ошибка: {e}")
+
+
 @bot.event
 async def on_ready():
     bot.add_view(PanelView())
