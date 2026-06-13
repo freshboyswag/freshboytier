@@ -591,7 +591,7 @@ async def sync_slash(interaction: discord.Interaction):
         await interaction.response.send_message("нет прав", ephemeral=True)
         return
     try:
-        synced = await bot.tree.sync()
+        synced = await bot.tree.sync(guild=interaction.guild)
         await interaction.response.send_message(f"синхронизировано {len(synced)} команд", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"ошибка: {e}", ephemeral=True)
@@ -601,7 +601,7 @@ async def sync_slash(interaction: discord.Interaction):
 @commands.has_permissions(administrator=True)
 async def sync(ctx):
     try:
-        synced = await bot.tree.sync()
+        synced = await bot.tree.sync(guild=ctx.guild)
         await ctx.send(f"синхронизировано {len(synced)} команд")
     except Exception as e:
         await ctx.send(f"ошибка: {e}")
