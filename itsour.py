@@ -30,15 +30,18 @@ ADMIN_ROLE_ID = 1510608237878181958
 # ───────────────────────────────────────────────
 # ТИКЕТ-СИСТЕМА
 # ───────────────────────────────────────────────
-TICKETS_CHANNEL_ID    = 1515299893634404492
-RESULTS_CHANNEL_ID    = 1515321581625282621
-LOGS_ACCEPTED_ID      = 1515321509525327902
-LOGS_REJECTED_ID      = 1515321532602253393
-TICKET_CATEGORY_ID    = 1515321259833954334  # категория где создаются тикеты
-RECRUIT_ROLE_ID       = 1515332515974353006
-ACCEPT_ROLE_ID        = 1515332850054991902
-CALL_CHANNEL_ID       = 1515334469912105070
-RESULTS_DM_CHANNEL_ID = 1515321581625282621  # канал results если лс закрыт
+TICKETS_CHANNEL_ID    = 1510606227355205712
+RESULTS_CHANNEL_ID    = 1510626562637041714
+LOGS_ACCEPTED_ID      = 1515439516666826823
+LOGS_REJECTED_ID      = 1515439610547929088
+TICKET_CATEGORY_ID    = 1515440541012066325  # категория где создаются тикеты
+# Роль которая видит канал тикета (только она + автор)
+TICKET_VIEW_ROLE_ID   = 1510614323754434670
+# Роли которые могут использовать кнопки в тикете
+RECRUIT_ROLE_IDS      = {1510614323754434670, 1510610391267545138, 1510601395999346819, 1510604555040198816}
+ACCEPT_ROLE_ID        = 1510603939664629891
+CALL_CHANNEL_ID       = 1510628196914171984
+RESULTS_DM_CHANNEL_ID = 1510626562637041714  # канал results если лс закрыт
 
 MONGO_URL = os.getenv("MONGO_URL")
 
@@ -57,7 +60,7 @@ def has_refresh_role(member):
     return any(role.id in REFRESH_ROLES for role in member.roles)
 
 def has_recruit_role(member):
-    return any(role.id == RECRUIT_ROLE_ID for role in member.roles)
+    return any(role.id in RECRUIT_ROLE_IDS for role in member.roles)
 
 def get_category_for_member(member: discord.Member):
     member_role_ids = {role.id for role in member.roles}
@@ -185,7 +188,7 @@ class TicketModal(Modal, title="Подать заявку"):
         await interaction.response.defer(ephemeral=True)
 
         guild = interaction.guild
-        recruit_role = guild.get_role(RECRUIT_ROLE_ID)
+        ticket_view_role = guild.get_role(TICKET_VIEW_ROLE_ID)
 
         category = guild.get_channel(TICKET_CATEGORY_ID)
 
@@ -194,8 +197,8 @@ class TicketModal(Modal, title="Подать заявку"):
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True),
         }
-        if recruit_role:
-            overwrites[recruit_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+        if ticket_view_role:
+            overwrites[ticket_view_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
 
         ticket_channel = await guild.create_text_channel(
             f"ticket-{username}",
@@ -214,7 +217,7 @@ class TicketModal(Modal, title="Подать заявку"):
         embed.add_field(name="ID", value=str(interaction.user.id), inline=True)
         embed.timestamp = discord.utils.utcnow()
 
-        mention_text = f"<@&{RECRUIT_ROLE_ID}>"
+        mention_text = f"<@&{TICKET_VIEW_ROLE_ID}>"
         ticket_msg = await ticket_channel.send(
             content=mention_text,
             embed=embed,
@@ -500,9 +503,9 @@ def build_ticket_panel_embed() -> discord.Embed:
         description=(
             f"Обычно приглашение на обзвон отправляется в личные сообщения, "
             f"если лс закрыт то оно придёт в канал <#{RESULTS_DM_CHANNEL_ID}>\n\n"
-            "Все поля обязательны для заполнения.\nЗаявки, заполненные не по форме, будут сразу закрыты\n"
-            "Заявки без откатов будут закрыты, писать «покажу на демке», «кину позже» не нужно\n"
-            "Откаты с гг должны быть не старше 2 недель\n"
+            "Все поля обязательны для заполнения. Заявки, заполненные не по форме, будут сразу закрыты\n\n"
+            "Заявки без откатов будут закрыты, писать «покажу на демке», «кину позже» не нужно\n\n"
+            "Откаты с гг должны быть не старше 2 недель\n\n"
             "Тикеты рассматриваются в течение 48 часов"
         ),
         color=0x2b2d31
