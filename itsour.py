@@ -599,11 +599,11 @@ async def sync_slash(interaction: discord.Interaction):
 
 @bot.command()
 @commands.has_permissions(administrator=True)
-async def sync(ctx):
+async def forcesync(ctx):
     try:
-        # Копируем глобальные команды на сервер
-        bot.tree.copy_global_to(guild=ctx.guild)
-        synced = await bot.tree.sync(guild=ctx.guild)
+        guild = discord.Object(id=ctx.guild.id)
+        bot.tree.copy_global_to(guild=guild)
+        synced = await bot.tree.sync(guild=guild)
         await ctx.send(f"синхронизировано {len(synced)} команд")
     except Exception as e:
         await ctx.send(f"ошибка: {e}")
