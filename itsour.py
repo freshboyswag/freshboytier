@@ -591,6 +591,7 @@ async def sync_slash(interaction: discord.Interaction):
         await interaction.response.send_message("нет прав", ephemeral=True)
         return
     try:
+        bot.tree.copy_global_to(guild=interaction.guild)
         synced = await bot.tree.sync(guild=interaction.guild)
         await interaction.response.send_message(f"синхронизировано {len(synced)} команд", ephemeral=True)
     except Exception as e:
@@ -599,23 +600,11 @@ async def sync_slash(interaction: discord.Interaction):
 
 @bot.command()
 @commands.has_permissions(administrator=True)
-async def forcesync(ctx):
+async def sync(ctx):
     try:
-        guild = discord.Object(id=ctx.guild.id)
-        bot.tree.copy_global_to(guild=guild)
-        synced = await bot.tree.sync(guild=guild)
+        bot.tree.copy_global_to(guild=ctx.guild)
+        synced = await bot.tree.sync(guild=ctx.guild)
         await ctx.send(f"синхронизировано {len(synced)} команд")
-    except Exception as e:
-        await ctx.send(f"ошибка: {e}")
-
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def clear_global(ctx):
-    try:
-        bot.tree.clear_commands(guild=None)
-        await bot.tree.sync()
-        await ctx.send("глобальные команды очищены")
     except Exception as e:
         await ctx.send(f"ошибка: {e}")
 
