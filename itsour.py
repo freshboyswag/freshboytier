@@ -530,7 +530,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     if not log_channel:
         return
 
-    # Зашёл в канал — без задержки, аудит лог не нужен
+    # Зашёл в канал
     if before.channel is None and after.channel is not None:
         embed = discord.Embed(color=0x2ecc71)
         embed.description = f"🟢 {member.mention} зашёл в **{after.channel.name}**"
@@ -538,7 +538,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         await log_channel.send(embed=embed)
         return
 
-    # Вышел из канала — без задержки
+    # Вышел из канала
     if before.channel is not None and after.channel is None:
         embed = discord.Embed(color=0xff4444)
         embed.description = f"🔴 {member.mention} вышел из **{before.channel.name}**"
@@ -546,87 +546,22 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         await log_channel.send(embed=embed)
         return
 
-    # Для всего остального — ждём 1 секунду чтобы аудит лог успел появиться
-    import asyncio
-    await asyncio.sleep(1)
-
-    embed = None
-    moderator = None
-
-    # Переключился между каналами — проверяем аудит лог на мув
+    # Сам перешёл между каналами — мув через аудит лог обрабатывается в on_audit_log_entry_create
+    # Здесь только самостоятельный переход (без модератора)
     if before.channel is not None and after.channel is not None and before.channel != after.channel:
+        import asyncio
+        await asyncio.sleep(1)
+        # Проверяем — если недавно был мув в аудит логе, значит это был мув, не логируем здесь
         try:
-            async for entry in guild.audit_logs(limit=10, action=discord.AuditLogAction.member_move):
-                if (discord.utils.utcnow() - entry.created_at).total_seconds() < 10:
-                    moderator = entry.user
-                    break
+            async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_move):
+                if (discord.utils.utcnow() - entry.created_at).total_seconds() < 3:
+                    # Был мув — on_audit_log_entry_create уже залогировал
+                    return
         except Exception:
             pass
+        # Мува не было — сам перешёл
         embed = discord.Embed(color=0x3498db)
-        if moderator and moderator.id != member.id:
-            embed.description = f"➡️ {moderator.mention} переместил {member.mention} из **{before.channel.name}** в **{after.channel.name}**"
-        else:
-            embed.description = f"🔄 {member.mention} перешёл из **{before.channel.name}** в **{after.channel.name}**"
-
-    # Серверный мут
-    elif not before.mute and after.mute:
-        try:
-            async for entry in guild.audit_logs(limit=10, action=discord.AuditLogAction.member_update):
-                if entry.target and entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 10:
-                    moderator = entry.user
-                    break
-        except Exception:
-            pass
-        embed = discord.Embed(color=0xe74c3c)
-        if moderator:
-            embed.description = f"🔇 {member.mention} был замучен {moderator.mention}"
-        else:
-            embed.description = f"🔇 {member.mention} был замучен"
-
-    elif before.mute and not after.mute:
-        try:
-            async for entry in guild.audit_logs(limit=10, action=discord.AuditLogAction.member_update):
-                if entry.target and entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 10:
-                    moderator = entry.user
-                    break
-        except Exception:
-            pass
-        embed = discord.Embed(color=0x2ecc71)
-        if moderator:
-            embed.description = f"🔊 {member.mention} был размучен {moderator.mention}"
-        else:
-            embed.description = f"🔊 {member.mention} был размучен"
-
-    # Серверный деф
-    elif not before.deaf and after.deaf:
-        try:
-            async for entry in guild.audit_logs(limit=10, action=discord.AuditLogAction.member_update):
-                if entry.target and entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 10:
-                    moderator = entry.user
-                    break
-        except Exception:
-            pass
-        embed = discord.Embed(color=0xe74c3c)
-        if moderator:
-            embed.description = f"🎧 {moderator.mention} выключил наушники {member.mention}"
-        else:
-            embed.description = f"🎧 {member.mention} — наушники выключены"
-
-    elif before.deaf and not after.deaf:
-        try:
-            async for entry in guild.audit_logs(limit=10, action=discord.AuditLogAction.member_update):
-                if entry.target and entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 10:
-                    moderator = entry.user
-                    break
-        except Exception:
-            pass
-        embed = discord.Embed(color=0x2ecc71)
-        if moderator:
-            embed.description = f"🎧 {moderator.mention} включил наушники {member.mention}"
-        else:
-            embed.description = f"🎧 {member.mention} — наушники включены"
-
-    if embed:
+        embed.description = f"🔄 {member.mention} перешёл из **{before.channel.name}** в **{after.channel.name}**"
         embed.timestamp = discord.utils.utcnow()
         await log_channel.send(embed=embed)
 
@@ -636,18 +571,59 @@ async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
     if not is_log_enabled("voice"):
         return
 
-    # Кик из войса
-    if entry.action == discord.AuditLogAction.member_disconnect:
-        guild = entry.guild
-        log_channel = guild.get_channel(VOICE_LOG_CHANNEL_ID)
-        if not log_channel:
-            return
+    guild = entry.guild
+    log_channel = guild.get_channel(VOICE_LOG_CHANNEL_ID)
+    if not log_channel:
+        return
 
+    # Мув участника
+    if entry.action == discord.AuditLogAction.member_move:
+        target = entry.target
+        channel = entry.extra.channel if hasattr(entry, "extra") and entry.extra and hasattr(entry.extra, "channel") else None
+        embed = discord.Embed(color=0x3498db)
+        if channel:
+            embed.description = f"➡️ {entry.user.mention} переместил {target.mention} в **{channel.name}**"
+        else:
+            embed.description = f"➡️ {entry.user.mention} переместил {target.mention} в другой канал"
+        embed.timestamp = discord.utils.utcnow()
+        await log_channel.send(embed=embed)
+
+    # Кик из войса
+    elif entry.action == discord.AuditLogAction.member_disconnect:
         target = entry.target
         embed = discord.Embed(color=0xff4444)
         embed.description = f"⛔ {entry.user.mention} выкинул {target.mention} из голосового канала"
         embed.timestamp = discord.utils.utcnow()
         await log_channel.send(embed=embed)
+
+    # Мут / размут / деф / андеф сервером
+    elif entry.action == discord.AuditLogAction.member_update:
+        target = entry.target
+        if not target:
+            return
+
+        before_val = entry.before
+        after_val = entry.after
+
+        # Мут
+        if hasattr(before_val, "mute") and hasattr(after_val, "mute") and before_val.mute != after_val.mute:
+            embed = discord.Embed(color=0xe74c3c if after_val.mute else 0x2ecc71)
+            if after_val.mute:
+                embed.description = f"🔇 {target.mention} был замучен {entry.user.mention}"
+            else:
+                embed.description = f"🔊 {target.mention} был размучен {entry.user.mention}"
+            embed.timestamp = discord.utils.utcnow()
+            await log_channel.send(embed=embed)
+
+        # Деф
+        if hasattr(before_val, "deaf") and hasattr(after_val, "deaf") and before_val.deaf != after_val.deaf:
+            embed = discord.Embed(color=0xe74c3c if after_val.deaf else 0x2ecc71)
+            if after_val.deaf:
+                embed.description = f"🎧 {entry.user.mention} выключил наушники {target.mention}"
+            else:
+                embed.description = f"🎧 {entry.user.mention} включил наушники {target.mention}"
+            embed.timestamp = discord.utils.utcnow()
+            await log_channel.send(embed=embed)
 
 
 # ═══════════════════════════════════════════════
