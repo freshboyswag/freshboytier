@@ -531,6 +531,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         return
 
     embed = None
+    moderator = None
 
     # Зашёл в канал
     if before.channel is None and after.channel is not None:
@@ -542,75 +543,78 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         embed = discord.Embed(color=0xff4444)
         embed.description = f"🔴 {member.mention} вышел из **{before.channel.name}**"
 
-    # Переключился между каналами
+    # Переключился между каналами — проверяем аудит лог на мув
     elif before.channel is not None and after.channel is not None and before.channel != after.channel:
+        try:
+            async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_move):
+                if (discord.utils.utcnow() - entry.created_at).total_seconds() < 3:
+                    moderator = entry.user
+                    break
+        except Exception:
+            pass
         embed = discord.Embed(color=0x3498db)
-        embed.description = f"🔄 {member.mention} перешёл из **{before.channel.name}** в **{after.channel.name}**"
-
-    # Мут себя
-    elif not before.self_mute and after.self_mute:
-        embed = discord.Embed(color=0x95a5a6)
-        embed.description = f"🔇 {member.mention} замутил себя в **{after.channel.name}**"
-
-    elif before.self_mute and not after.self_mute:
-        embed = discord.Embed(color=0x95a5a6)
-        embed.description = f"🔊 {member.mention} размутил себя в **{after.channel.name}**"
-
-    # Дефен себя
-    elif not before.self_deaf and after.self_deaf:
-        embed = discord.Embed(color=0x95a5a6)
-        embed.description = f"🎧 {member.mention} надел наушники (деф) в **{after.channel.name}**"
-
-    elif before.self_deaf and not after.self_deaf:
-        embed = discord.Embed(color=0x95a5a6)
-        embed.description = f"🎧 {member.mention} снял наушники (анлдеф) в **{after.channel.name}**"
+        if moderator and moderator.id != member.id:
+            embed.description = f"➡️ {moderator.mention} переместил {member.mention} из **{before.channel.name}** в **{after.channel.name}**"
+        else:
+            embed.description = f"🔄 {member.mention} перешёл из **{before.channel.name}** в **{after.channel.name}**"
 
     # Серверный мут (кто-то замутил)
     elif not before.mute and after.mute:
-        embed = discord.Embed(color=0xe74c3c)
-        embed.description = f"🔇 {member.mention} был замучен сервером в **{after.channel.name}**"
-        # Пробуем найти кто замутил через аудит лог
         try:
             async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_update):
-                if entry.target.id == member.id:
-                    embed.description += f"\nМодератор: {entry.user.mention}"
+                if entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 3:
+                    moderator = entry.user
                     break
         except Exception:
             pass
+        embed = discord.Embed(color=0xe74c3c)
+        if moderator:
+            embed.description = f"🔇 {member.mention} был замучен {moderator.mention}"
+        else:
+            embed.description = f"🔇 {member.mention} был замучен"
 
     elif before.mute and not after.mute:
+        try:
+            async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_update):
+                if entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 3:
+                    moderator = entry.user
+                    break
+        except Exception:
+            pass
         embed = discord.Embed(color=0x2ecc71)
-        embed.description = f"🔊 {member.mention} был размучен сервером в **{after.channel.name}**"
-        try:
-            async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_update):
-                if entry.target.id == member.id:
-                    embed.description += f"\nМодератор: {entry.user.mention}"
-                    break
-        except Exception:
-            pass
+        if moderator:
+            embed.description = f"🔊 {member.mention} был размучен {moderator.mention}"
+        else:
+            embed.description = f"🔊 {member.mention} был размучен"
 
-    # Серверный деф (кто-то задефенил)
+    # Серверный деф (кто-то выключил наушники)
     elif not before.deaf and after.deaf:
-        embed = discord.Embed(color=0xe74c3c)
-        embed.description = f"🎧 {member.mention} был задефенен сервером в **{after.channel.name}**"
         try:
             async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_update):
-                if entry.target.id == member.id:
-                    embed.description += f"\nМодератор: {entry.user.mention}"
+                if entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 3:
+                    moderator = entry.user
                     break
         except Exception:
             pass
+        embed = discord.Embed(color=0xe74c3c)
+        if moderator:
+            embed.description = f"🎧 {moderator.mention} выключил наушники {member.mention}"
+        else:
+            embed.description = f"🎧 {member.mention} — наушники выключены"
 
     elif before.deaf and not after.deaf:
-        embed = discord.Embed(color=0x2ecc71)
-        embed.description = f"🎧 {member.mention} был разадефенен сервером в **{after.channel.name}**"
         try:
             async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_update):
-                if entry.target.id == member.id:
-                    embed.description += f"\nМодератор: {entry.user.mention}"
+                if entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 3:
+                    moderator = entry.user
                     break
         except Exception:
             pass
+        embed = discord.Embed(color=0x2ecc71)
+        if moderator:
+            embed.description = f"🎧 {moderator.mention} включил наушники {member.mention}"
+        else:
+            embed.description = f"🎧 {member.mention} — наушники включены"
 
     if embed:
         embed.timestamp = discord.utils.utcnow()
@@ -622,26 +626,8 @@ async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
     if not is_log_enabled("voice"):
         return
 
-    # Мув участника в другой канал
-    if entry.action == discord.AuditLogAction.member_move:
-        guild = entry.guild
-        log_channel = guild.get_channel(VOICE_LOG_CHANNEL_ID)
-        if not log_channel:
-            return
-
-        target = entry.target
-        channel = entry.extra.channel if hasattr(entry, 'extra') and entry.extra else None
-
-        embed = discord.Embed(color=0xf39c12)
-        if channel:
-            embed.description = f"➡️ {entry.user.mention} переместил {target.mention} в **{channel.name}**"
-        else:
-            embed.description = f"➡️ {entry.user.mention} переместил {target.mention} в другой канал"
-        embed.timestamp = discord.utils.utcnow()
-        await log_channel.send(embed=embed)
-
     # Кик из войса
-    elif entry.action == discord.AuditLogAction.member_disconnect:
+    if entry.action == discord.AuditLogAction.member_disconnect:
         guild = entry.guild
         log_channel = guild.get_channel(VOICE_LOG_CHANNEL_ID)
         if not log_channel:
@@ -664,15 +650,17 @@ async def logs_cmd(interaction: discord.Interaction, type: str):
         await interaction.response.send_message("нет прав", ephemeral=True)
         return
 
+    await interaction.response.defer(ephemeral=True)
+
     allowed = ["voice"]
     if type not in allowed:
-        await interaction.response.send_message(f"неизвестный тип. доступные: {', '.join(allowed)}", ephemeral=True)
+        await interaction.followup.send(f"неизвестный тип. доступные: {', '.join(allowed)}", ephemeral=True)
         return
 
     current = is_log_enabled(type)
     set_log_enabled(type, not current)
     status = "включены ✅" if not current else "выключены ❌"
-    await interaction.response.send_message(f"логи `{type}` {status}", ephemeral=True)
+    await interaction.followup.send(f"логи `{type}` {status}", ephemeral=True)
 
 
 @bot.tree.command(name="starts", description="Отправить панель личных каналов")
