@@ -530,24 +530,34 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     if not log_channel:
         return
 
-    embed = None
-    moderator = None
-
-    # Зашёл в канал
+    # Зашёл в канал — без задержки, аудит лог не нужен
     if before.channel is None and after.channel is not None:
         embed = discord.Embed(color=0x2ecc71)
         embed.description = f"🟢 {member.mention} зашёл в **{after.channel.name}**"
+        embed.timestamp = discord.utils.utcnow()
+        await log_channel.send(embed=embed)
+        return
 
-    # Вышел из канала
-    elif before.channel is not None and after.channel is None:
+    # Вышел из канала — без задержки
+    if before.channel is not None and after.channel is None:
         embed = discord.Embed(color=0xff4444)
         embed.description = f"🔴 {member.mention} вышел из **{before.channel.name}**"
+        embed.timestamp = discord.utils.utcnow()
+        await log_channel.send(embed=embed)
+        return
+
+    # Для всего остального — ждём 500мс чтобы аудит лог успел появиться
+    import asyncio
+    await asyncio.sleep(0.5)
+
+    embed = None
+    moderator = None
 
     # Переключился между каналами — проверяем аудит лог на мув
-    elif before.channel is not None and after.channel is not None and before.channel != after.channel:
+    if before.channel is not None and after.channel is not None and before.channel != after.channel:
         try:
-            async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_move):
-                if (discord.utils.utcnow() - entry.created_at).total_seconds() < 3:
+            async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_move):
+                if entry.target and entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 5:
                     moderator = entry.user
                     break
         except Exception:
@@ -558,11 +568,11 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         else:
             embed.description = f"🔄 {member.mention} перешёл из **{before.channel.name}** в **{after.channel.name}**"
 
-    # Серверный мут (кто-то замутил)
+    # Серверный мут
     elif not before.mute and after.mute:
         try:
-            async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_update):
-                if entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 3:
+            async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
+                if entry.target and entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 5:
                     moderator = entry.user
                     break
         except Exception:
@@ -575,8 +585,8 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
     elif before.mute and not after.mute:
         try:
-            async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_update):
-                if entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 3:
+            async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
+                if entry.target and entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 5:
                     moderator = entry.user
                     break
         except Exception:
@@ -587,11 +597,11 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         else:
             embed.description = f"🔊 {member.mention} был размучен"
 
-    # Серверный деф (кто-то выключил наушники)
+    # Серверный деф
     elif not before.deaf and after.deaf:
         try:
-            async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_update):
-                if entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 3:
+            async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
+                if entry.target and entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 5:
                     moderator = entry.user
                     break
         except Exception:
@@ -604,8 +614,8 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
     elif before.deaf and not after.deaf:
         try:
-            async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_update):
-                if entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 3:
+            async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
+                if entry.target and entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 5:
                     moderator = entry.user
                     break
         except Exception:
