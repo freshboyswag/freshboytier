@@ -11,6 +11,7 @@ from datetime import datetime
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.voice_states = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ───────────────────────────────────────────────
@@ -34,14 +35,17 @@ TICKETS_CHANNEL_ID    = 1510606227355205712
 RESULTS_CHANNEL_ID    = 1510626562637041714
 LOGS_ACCEPTED_ID      = 1515439516666826823
 LOGS_REJECTED_ID      = 1515439610547929088
-TICKET_CATEGORY_ID    = 1515440541012066325  # категория где создаются тикеты
-# Роль которая видит канал тикета (только она + автор)
+TICKET_CATEGORY_ID    = 1515440541012066325
 TICKET_VIEW_ROLE_ID   = 1510614323754434670
-# Роли которые могут использовать кнопки в тикете
 RECRUIT_ROLE_IDS      = {1510614323754434670, 1510610391267545138, 1510601395999346819, 1510604555040198816}
 ACCEPT_ROLE_ID        = 1510603939664629891
 CALL_CHANNEL_ID       = 1510628196914171984
-RESULTS_DM_CHANNEL_ID = 1510626562637041714  # канал results если лс закрыт
+RESULTS_DM_CHANNEL_ID = 1510626562637041714
+
+# ───────────────────────────────────────────────
+# ЛОГИ
+# ───────────────────────────────────────────────
+VOICE_LOG_CHANNEL_ID = 1515730296161439975
 
 MONGO_URL = os.getenv("MONGO_URL")
 
@@ -56,6 +60,9 @@ def get_collection():
 def get_tickets_collection():
     return get_db()["tickets"]
 
+def get_logs_collection():
+    return get_db()["logs_settings"]
+
 def has_refresh_role(member):
     return any(role.id in REFRESH_ROLES for role in member.roles)
 
@@ -68,6 +75,21 @@ def get_category_for_member(member: discord.Member):
         if role_id in member_role_ids:
             return category_id
     return NO_TIER_CATEGORY_ID
+
+def is_log_enabled(log_type: str) -> bool:
+    try:
+        col = get_logs_collection()
+        doc = col.find_one({"type": log_type})
+        return doc.get("enabled", False) if doc else False
+    except Exception:
+        return False
+
+def set_log_enabled(log_type: str, enabled: bool):
+    try:
+        col = get_logs_collection()
+        col.update_one({"type": log_type}, {"$set": {"enabled": enabled}}, upsert=True)
+    except Exception as e:
+        print(f"[ERROR] MongoDB logs: {e}")
 
 
 # ═══════════════════════════════════════════════
@@ -189,10 +211,9 @@ class TicketModal(Modal, title="Подать заявку"):
 
         guild = interaction.guild
         ticket_view_role = guild.get_role(TICKET_VIEW_ROLE_ID)
-
         category = guild.get_channel(TICKET_CATEGORY_ID)
-
         username = interaction.user.name
+
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True),
@@ -224,7 +245,6 @@ class TicketModal(Modal, title="Подать заявку"):
             view=TicketActionsView(applicant_id=interaction.user.id)
         )
 
-        # Сохраняем тикет в БД
         try:
             col = get_tickets_collection()
             col.insert_one({
@@ -269,7 +289,6 @@ class RejectModal(Modal, title="Причина отклонения"):
         results_channel = guild.get_channel(RESULTS_CHANNEL_ID)
         logs_channel = guild.get_channel(LOGS_REJECTED_ID)
 
-        # Удаляем сообщение об обзвоне из results если было
         results_msg_id = self.ticket_data.get("results_msg_id")
         if results_msg_id and results_channel:
             try:
@@ -278,7 +297,6 @@ class RejectModal(Modal, title="Причина отклонения"):
             except Exception:
                 pass
 
-        # Эмбед в results
         embed = discord.Embed(color=0xff4444)
         embed.description = (
             f"Заявка пользователя {self.applicant.mention}\n\n"
@@ -289,7 +307,6 @@ class RejectModal(Modal, title="Причина отклонения"):
         if results_channel:
             await results_channel.send(embed=embed)
 
-        # Лог в logs-rejected
         if logs_channel:
             log_embed = discord.Embed(title="Заявка отклонена", color=0xff4444)
             log_embed.add_field(name="Пользователь", value=f"{self.applicant.mention} (`{self.applicant.name}`)", inline=False)
@@ -304,7 +321,6 @@ class RejectModal(Modal, title="Причина отклонения"):
             log_embed.timestamp = discord.utils.utcnow()
             await logs_channel.send(embed=log_embed)
 
-        # Удаляем из БД и канал тикета
         try:
             col = get_tickets_collection()
             col.delete_one({"channel_id": str(self.ticket_channel.id)})
@@ -318,14 +334,6 @@ class TicketActionsView(View):
     def __init__(self, applicant_id: int = None):
         super().__init__(timeout=None)
         self.applicant_id = applicant_id
-
-    def get_custom_ids(self):
-        return {
-            "accept": f"ticket_accept",
-            "review": f"ticket_review",
-            "call": f"ticket_call",
-            "reject": f"ticket_reject",
-        }
 
     async def get_ticket_data(self, channel_id: str):
         try:
@@ -353,7 +361,6 @@ class TicketActionsView(View):
         results_channel = guild.get_channel(RESULTS_CHANNEL_ID)
         logs_channel = guild.get_channel(LOGS_ACCEPTED_ID)
 
-        # Удаляем сообщение об обзвоне из results если было
         results_msg_id = ticket_data.get("results_msg_id")
         if results_msg_id and results_channel:
             try:
@@ -362,7 +369,6 @@ class TicketActionsView(View):
             except Exception:
                 pass
 
-        # Выдаём роль
         if applicant:
             accept_role = guild.get_role(ACCEPT_ROLE_ID)
             if accept_role:
@@ -371,7 +377,6 @@ class TicketActionsView(View):
                 except Exception as e:
                     print(f"[ERROR] Не удалось выдать роль: {e}")
 
-        # Эмбед в results
         embed = discord.Embed(color=0x2ecc71)
         embed.description = (
             f"Заявка пользователя {applicant.mention if applicant else ticket_data['applicant_name']}\n\n"
@@ -381,7 +386,6 @@ class TicketActionsView(View):
         if results_channel:
             await results_channel.send(embed=embed)
 
-        # Лог в logs-accepted
         if logs_channel:
             log_embed = discord.Embed(title="Заявка принята", color=0x2ecc71)
             log_embed.add_field(name="Пользователь", value=f"{applicant.mention if applicant else ticket_data['applicant_name']} (`{ticket_data['applicant_name']}`)", inline=False)
@@ -395,7 +399,6 @@ class TicketActionsView(View):
             log_embed.timestamp = discord.utils.utcnow()
             await logs_channel.send(embed=log_embed)
 
-        # Удаляем из БД и канал
         try:
             col = get_tickets_collection()
             col.delete_one({"channel_id": str(interaction.channel.id)})
@@ -449,7 +452,6 @@ class TicketActionsView(View):
                 embed=call_embed
             )
 
-        # Сохраняем ID сообщения в results если отправили туда
         if results_msg:
             try:
                 col = get_tickets_collection()
@@ -515,8 +517,163 @@ def build_ticket_panel_embed() -> discord.Embed:
 
 
 # ═══════════════════════════════════════════════
+# ВОЙС ЛОГИ
+# ═══════════════════════════════════════════════
+
+@bot.event
+async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    if not is_log_enabled("voice"):
+        return
+
+    guild = member.guild
+    log_channel = guild.get_channel(VOICE_LOG_CHANNEL_ID)
+    if not log_channel:
+        return
+
+    embed = None
+
+    # Зашёл в канал
+    if before.channel is None and after.channel is not None:
+        embed = discord.Embed(color=0x2ecc71)
+        embed.description = f"🟢 {member.mention} зашёл в **{after.channel.name}**"
+
+    # Вышел из канала
+    elif before.channel is not None and after.channel is None:
+        embed = discord.Embed(color=0xff4444)
+        embed.description = f"🔴 {member.mention} вышел из **{before.channel.name}**"
+
+    # Переключился между каналами
+    elif before.channel is not None and after.channel is not None and before.channel != after.channel:
+        embed = discord.Embed(color=0x3498db)
+        embed.description = f"🔄 {member.mention} перешёл из **{before.channel.name}** в **{after.channel.name}**"
+
+    # Мут себя
+    elif not before.self_mute and after.self_mute:
+        embed = discord.Embed(color=0x95a5a6)
+        embed.description = f"🔇 {member.mention} замутил себя в **{after.channel.name}**"
+
+    elif before.self_mute and not after.self_mute:
+        embed = discord.Embed(color=0x95a5a6)
+        embed.description = f"🔊 {member.mention} размутил себя в **{after.channel.name}**"
+
+    # Дефен себя
+    elif not before.self_deaf and after.self_deaf:
+        embed = discord.Embed(color=0x95a5a6)
+        embed.description = f"🎧 {member.mention} надел наушники (деф) в **{after.channel.name}**"
+
+    elif before.self_deaf and not after.self_deaf:
+        embed = discord.Embed(color=0x95a5a6)
+        embed.description = f"🎧 {member.mention} снял наушники (анлдеф) в **{after.channel.name}**"
+
+    # Серверный мут (кто-то замутил)
+    elif not before.mute and after.mute:
+        embed = discord.Embed(color=0xe74c3c)
+        embed.description = f"🔇 {member.mention} был замучен сервером в **{after.channel.name}**"
+        # Пробуем найти кто замутил через аудит лог
+        try:
+            async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_update):
+                if entry.target.id == member.id:
+                    embed.description += f"\nМодератор: {entry.user.mention}"
+                    break
+        except Exception:
+            pass
+
+    elif before.mute and not after.mute:
+        embed = discord.Embed(color=0x2ecc71)
+        embed.description = f"🔊 {member.mention} был размучен сервером в **{after.channel.name}**"
+        try:
+            async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_update):
+                if entry.target.id == member.id:
+                    embed.description += f"\nМодератор: {entry.user.mention}"
+                    break
+        except Exception:
+            pass
+
+    # Серверный деф (кто-то задефенил)
+    elif not before.deaf and after.deaf:
+        embed = discord.Embed(color=0xe74c3c)
+        embed.description = f"🎧 {member.mention} был задефенен сервером в **{after.channel.name}**"
+        try:
+            async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_update):
+                if entry.target.id == member.id:
+                    embed.description += f"\nМодератор: {entry.user.mention}"
+                    break
+        except Exception:
+            pass
+
+    elif before.deaf and not after.deaf:
+        embed = discord.Embed(color=0x2ecc71)
+        embed.description = f"🎧 {member.mention} был разадефенен сервером в **{after.channel.name}**"
+        try:
+            async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_update):
+                if entry.target.id == member.id:
+                    embed.description += f"\nМодератор: {entry.user.mention}"
+                    break
+        except Exception:
+            pass
+
+    if embed:
+        embed.timestamp = discord.utils.utcnow()
+        await log_channel.send(embed=embed)
+
+
+@bot.event
+async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
+    if not is_log_enabled("voice"):
+        return
+
+    # Мув участника в другой канал
+    if entry.action == discord.AuditLogAction.member_move:
+        guild = entry.guild
+        log_channel = guild.get_channel(VOICE_LOG_CHANNEL_ID)
+        if not log_channel:
+            return
+
+        target = entry.target
+        channel = entry.extra.channel if hasattr(entry, 'extra') and entry.extra else None
+
+        embed = discord.Embed(color=0xf39c12)
+        if channel:
+            embed.description = f"➡️ {entry.user.mention} переместил {target.mention} в **{channel.name}**"
+        else:
+            embed.description = f"➡️ {entry.user.mention} переместил {target.mention} в другой канал"
+        embed.timestamp = discord.utils.utcnow()
+        await log_channel.send(embed=embed)
+
+    # Кик из войса
+    elif entry.action == discord.AuditLogAction.member_disconnect:
+        guild = entry.guild
+        log_channel = guild.get_channel(VOICE_LOG_CHANNEL_ID)
+        if not log_channel:
+            return
+
+        target = entry.target
+        embed = discord.Embed(color=0xff4444)
+        embed.description = f"⛔ {entry.user.mention} выкинул {target.mention} из голосового канала"
+        embed.timestamp = discord.utils.utcnow()
+        await log_channel.send(embed=embed)
+
+
+# ═══════════════════════════════════════════════
 # КОМАНДЫ
 # ═══════════════════════════════════════════════
+
+@bot.tree.command(name="logs", description="Включить или выключить логи")
+async def logs_cmd(interaction: discord.Interaction, тип: str):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("нет прав", ephemeral=True)
+        return
+
+    allowed = ["voice"]
+    if тип not in allowed:
+        await interaction.response.send_message(f"неизвестный тип. доступные: {', '.join(allowed)}", ephemeral=True)
+        return
+
+    current = is_log_enabled(тип)
+    set_log_enabled(тип, not current)
+    status = "включены ✅" if not current else "выключены ❌"
+    await interaction.response.send_message(f"логи `{тип}` {status}", ephemeral=True)
+
 
 @bot.tree.command(name="starts", description="Отправить панель личных каналов")
 async def starts(interaction: discord.Interaction):
