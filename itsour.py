@@ -659,20 +659,20 @@ async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
 # ═══════════════════════════════════════════════
 
 @bot.tree.command(name="logs", description="Включить или выключить логи")
-async def logs_cmd(interaction: discord.Interaction, тип: str):
+async def logs_cmd(interaction: discord.Interaction, type: str):
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("нет прав", ephemeral=True)
         return
 
     allowed = ["voice"]
-    if тип not in allowed:
+    if type not in allowed:
         await interaction.response.send_message(f"неизвестный тип. доступные: {', '.join(allowed)}", ephemeral=True)
         return
 
-    current = is_log_enabled(тип)
-    set_log_enabled(тип, not current)
+    current = is_log_enabled(type)
+    set_log_enabled(type, not current)
     status = "включены ✅" if not current else "выключены ❌"
-    await interaction.response.send_message(f"логи `{тип}` {status}", ephemeral=True)
+    await interaction.response.send_message(f"логи `{type}` {status}", ephemeral=True)
 
 
 @bot.tree.command(name="starts", description="Отправить панель личных каналов")
