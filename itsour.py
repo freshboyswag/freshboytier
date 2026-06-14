@@ -546,9 +546,9 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         await log_channel.send(embed=embed)
         return
 
-    # Для всего остального — ждём 500мс чтобы аудит лог успел появиться
+    # Для всего остального — ждём 1 секунду чтобы аудит лог успел появиться
     import asyncio
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(1)
 
     embed = None
     moderator = None
@@ -556,8 +556,8 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     # Переключился между каналами — проверяем аудит лог на мув
     if before.channel is not None and after.channel is not None and before.channel != after.channel:
         try:
-            async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_move):
-                if entry.target and entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 5:
+            async for entry in guild.audit_logs(limit=10, action=discord.AuditLogAction.member_move):
+                if (discord.utils.utcnow() - entry.created_at).total_seconds() < 10:
                     moderator = entry.user
                     break
         except Exception:
@@ -571,8 +571,8 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     # Серверный мут
     elif not before.mute and after.mute:
         try:
-            async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
-                if entry.target and entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 5:
+            async for entry in guild.audit_logs(limit=10, action=discord.AuditLogAction.member_update):
+                if entry.target and entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 10:
                     moderator = entry.user
                     break
         except Exception:
@@ -585,8 +585,8 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
     elif before.mute and not after.mute:
         try:
-            async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
-                if entry.target and entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 5:
+            async for entry in guild.audit_logs(limit=10, action=discord.AuditLogAction.member_update):
+                if entry.target and entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 10:
                     moderator = entry.user
                     break
         except Exception:
@@ -600,8 +600,8 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     # Серверный деф
     elif not before.deaf and after.deaf:
         try:
-            async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
-                if entry.target and entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 5:
+            async for entry in guild.audit_logs(limit=10, action=discord.AuditLogAction.member_update):
+                if entry.target and entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 10:
                     moderator = entry.user
                     break
         except Exception:
@@ -614,8 +614,8 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
     elif before.deaf and not after.deaf:
         try:
-            async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
-                if entry.target and entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 5:
+            async for entry in guild.audit_logs(limit=10, action=discord.AuditLogAction.member_update):
+                if entry.target and entry.target.id == member.id and (discord.utils.utcnow() - entry.created_at).total_seconds() < 10:
                     moderator = entry.user
                     break
         except Exception:
