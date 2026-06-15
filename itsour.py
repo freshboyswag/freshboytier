@@ -968,6 +968,147 @@ class RegView(View):
 
         await interaction.followup.send(f"добавлено: {len(added)}", ephemeral=True)
 
+    @discord.ui.button(label="🎤 Проверка по войсу", style=discord.ButtonStyle.grey, custom_id="reg_voice_check")
+    async def reg_voice_check(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not has_reg_admin_role(interaction.user):
+            await interaction.response.send_message("нет прав", ephemeral=True)
+            return
+
+        data = await self.get_data(interaction.message.id)
+        if not data:
+            await interaction.response.send_message("список не найден", ephemeral=True)
+            return
+
+        # Отправляем select menu с войс каналами
+        view = VoiceSelectView(reg_message_id=interaction.message.id, reg_data=data)
+        await view.setup(interaction.guild)
+        await interaction.response.send_message("выберите голосовой канал для проверки:", view=view, ephemeral=True)
+
+
+# ───────────────────────────────────────────────
+# SELECT MENU ДЛЯ ВЫБОРА ВОЙС КАНАЛА
+# ───────────────────────────────────────────────
+
+VOICE_CHECK_CHANNELS = [
+    1510602284373905540,
+    1510602312647835768,
+    1510607276761940060,
+    1510607301260869702,
+    1510609306498760854,
+    1510609331966709881,
+    1515761158311641099,
+]
+
+class VoiceChannelSelect(discord.ui.Select):
+    def __init__(self, guild: discord.Guild, reg_message_id: int, reg_data: dict):
+        self.reg_message_id = reg_message_id
+        self.reg_data = reg_data
+
+        options = []
+        for ch_id in VOICE_CHECK_CHANNELS:
+            ch = guild.get_channel(ch_id)
+            if ch:
+                options.append(discord.SelectOption(label=ch.name, value=str(ch.id)))
+
+        if not options:
+            options.append(discord.SelectOption(label="каналы не найдены", value="none"))
+
+        super().__init__(
+            placeholder="выберите голосовой канал...",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        if self.values[0] == "none":
+            await interaction.followup.send("голосовые каналы не найдены", ephemeral=True)
+            return
+
+        voice_channel = interaction.guild.get_channel(int(self.values[0]))
+        if not voice_channel:
+            await interaction.followup.send("канал не найден", ephemeral=True)
+            return
+
+        # Получаем кто сейчас в войсе
+        members_in_voice = {str(m.id) for m in voice_channel.members}
+
+        main_list = self.reg_data["main_list"]
+        reserve_list = self.reg_data["reserve_list"]
+
+        # Проверяем основной список
+        in_voice_main = [u for u in main_list if u["id"] in members_in_voice]
+        not_in_voice_main = [u for u in main_list if u["id"] not in members_in_voice]
+
+        # Проверяем замену
+        in_voice_reserve = [u for u in reserve_list if u["id"] in members_in_voice]
+        not_in_voice_reserve = [u for u in reserve_list if u["id"] not in members_in_voice]
+
+        # Формируем результат
+        lines = []
+        lines.append(f"**Проверка по войсу: {voice_channel.name}**")
+        lines.append("")
+        lines.append(f"**Основной список — присутствуют ({len(in_voice_main)}/{len(main_list)}):**")
+        if in_voice_main:
+            for u in in_voice_main:
+                lines.append("✅ " + u["nick"])
+        else:
+            lines.append("никого")
+        lines.append("")
+        lines.append(f"**Основной список — отсутствуют ({len(not_in_voice_main)}/{len(main_list)}):**")
+        if not_in_voice_main:
+            for u in not_in_voice_main:
+                lines.append("❌ " + u["nick"])
+        else:
+            lines.append("все на месте")
+        if reserve_list:
+            lines.append("")
+            lines.append(f"**Замена — присутствуют ({len(in_voice_reserve)}/{len(reserve_list)}):**")
+            if in_voice_reserve:
+                for u in in_voice_reserve:
+                    lines.append("✅ " + u["nick"])
+            else:
+                lines.append("никого")
+            lines.append("")
+            lines.append(f"**Замена — отсутствуют ({len(not_in_voice_reserve)}/{len(reserve_list)}):**")
+            if not_in_voice_reserve:
+                for u in not_in_voice_reserve:
+                    lines.append("❌ " + u["nick"])
+            else:
+                lines.append("все на месте")
+        result = chr(10).join(lines)
+
+        await interaction.followup.send(result, ephemeral=True)
+
+        # Логируем в ветку
+        try:
+            reg_channel = interaction.guild.get_channel(int(self.reg_data.get("channel_id", 0)))
+            if reg_channel:
+                reg_msg = await reg_channel.fetch_message(self.reg_message_id)
+                if reg_msg and hasattr(reg_msg, "thread") and reg_msg.thread:
+                    present = " ".join(f"<@{u['id']}>" for u in in_voice_main) or "никого"
+                    absent = " ".join(f"<@{u['id']}>" for u in not_in_voice_main) or "все на месте"
+                    log_text = (
+                        f"{interaction.user.display_name} провёл проверку по войсу **{voice_channel.name}**"
+                        + chr(10) + "Присутствуют: " + present
+                        + chr(10) + "Отсутствуют: " + absent
+                    )
+                    await reg_msg.thread.send(log_text)
+        except Exception as e:
+            print(f"[ERROR] voice check log: {e}")
+
+
+class VoiceSelectView(View):
+    def __init__(self, reg_message_id: int, reg_data: dict):
+        super().__init__(timeout=30)
+        self.reg_message_id = reg_message_id
+        self.reg_data = reg_data
+
+    async def setup(self, guild: discord.Guild):
+        self.add_item(VoiceChannelSelect(guild, self.reg_message_id, self.reg_data))
+
 
 # ═══════════════════════════════════════════════
 # КОМАНДЫ
