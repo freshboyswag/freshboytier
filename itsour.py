@@ -1092,6 +1092,7 @@ class VoiceChannelSelect(discord.ui.Select):
                     absent = " ".join(f"<@{u['id']}>" for u in not_in_voice_main) or "все на месте"
                     log_text = (
                         f"{interaction.user.display_name} провёл проверку по войсу **{voice_channel.name}**"
+                        + chr(10) + "Присутствуют: " + present
                         + chr(10) + "Отсутствуют: " + absent
                     )
                     await reg_msg.thread.send(log_text)
@@ -1109,9 +1110,271 @@ class VoiceSelectView(View):
         self.add_item(VoiceChannelSelect(guild, self.reg_message_id, self.reg_data))
 
 
+
+# ═══════════════════════════════════════════════
+# СИСТЕМА ОТПУСКОВ
+# ═══════════════════════════════════════════════
+
+VACATION_CHANNEL_ID   = 1515989899793268877
+VACATION_ROLE_ID      = 1515990627832172665
+VACATION_REQUESTS_ID  = 1516073358729678968
+VACATION_MOD_ROLES    = {1510610350532329642, 1510610391267545138, 1510601395999346819, 1510604555040198816}
+
+def has_vacation_mod_role(member):
+    return any(role.id in VACATION_MOD_ROLES for role in member.roles)
+
+def get_vacation_collection():
+    return get_db()["vacations"]
+
+
+class VacationModal(Modal, title="Заявка на отпуск"):
+    until = TextInput(
+        label="До какого отпуск?",
+        placeholder="например: 25 июня",
+        style=discord.TextStyle.short,
+        min_length=1,
+        max_length=100
+    )
+    reason = TextInput(
+        label="Причина отпуска",
+        placeholder="укажи причину",
+        style=discord.TextStyle.paragraph,
+        min_length=1,
+        max_length=500
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        requests_channel = guild.get_channel(VACATION_REQUESTS_ID)
+        if not requests_channel:
+            await interaction.followup.send("канал для заявок не найден", ephemeral=True)
+            return
+
+        # Проверяем не в отпуске ли уже
+        vacation_role = guild.get_role(VACATION_ROLE_ID)
+        if vacation_role and vacation_role in interaction.user.roles:
+            await interaction.followup.send("ты уже в отпуске", ephemeral=True)
+            return
+
+        embed = discord.Embed(title="Новая заявка на отпуск", color=0x1ABC9C)
+        embed.add_field(name="Участник", value=interaction.user.mention, inline=False)
+        embed.add_field(name="До какого", value=self.until.value, inline=True)
+        embed.add_field(name="Причина", value=self.reason.value, inline=False)
+        embed.timestamp = discord.utils.utcnow()
+
+        view = VacationApproveView(applicant_id=interaction.user.id)
+        await requests_channel.send(embed=embed, view=view)
+
+        await interaction.followup.send("заявка отправлена, ожидай решения", ephemeral=True)
+
+
+class VacationApproveView(View):
+    def __init__(self, applicant_id: int = None):
+        super().__init__(timeout=None)
+        self.applicant_id = applicant_id
+
+    @discord.ui.button(label="✅ Принять", style=discord.ButtonStyle.green, custom_id="vacation_accept")
+    async def vacation_accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not has_vacation_mod_role(interaction.user):
+            await interaction.response.send_message("нет прав", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+
+        guild = interaction.guild
+
+        # Получаем айди заявителя из эмбеда
+        embed = interaction.message.embeds[0]
+        applicant_id = None
+        for field in embed.fields:
+            if field.name == "Участник":
+                import re
+                match = re.search(r"\d{17,20}", field.value)
+                if match:
+                    applicant_id = int(match.group())
+                break
+
+        if not applicant_id:
+            await interaction.followup.send("не удалось найти участника", ephemeral=True)
+            return
+
+        applicant = guild.get_member(applicant_id)
+        if not applicant:
+            await interaction.followup.send("участник не найден на сервере", ephemeral=True)
+            return
+
+        vacation_role = guild.get_role(VACATION_ROLE_ID)
+
+        # Сохраняем все роли кроме @everyone и отпускной
+        roles_to_save = [r for r in applicant.roles if r.id != guild.default_role.id and r.id != VACATION_ROLE_ID]
+        role_ids = [r.id for r in roles_to_save]
+
+        try:
+            col = get_vacation_collection()
+            col.update_one(
+                {"user_id": str(applicant_id)},
+                {"$set": {"user_id": str(applicant_id), "saved_roles": role_ids}},
+                upsert=True
+            )
+        except Exception as e:
+            print(f"[ERROR] MongoDB vacation: {e}")
+
+        # Снимаем все роли и выдаём отпускную
+        try:
+            await applicant.remove_roles(*roles_to_save, reason="отпуск")
+            if vacation_role:
+                await applicant.add_roles(vacation_role, reason="отпуск принят")
+        except Exception as e:
+            print(f"[ERROR] роли отпуск: {e}")
+
+        # Уведомление в лс
+        try:
+            await applicant.send("ваша заявка на отпуск одобрена")
+        except discord.Forbidden:
+            pass
+
+        # Редактируем сообщение
+        new_embed = discord.Embed(color=0x2ecc71)
+        new_embed.description = f"✅ Заявка {applicant.mention} **одобрена** модератором {interaction.user.mention}"
+        new_embed.timestamp = discord.utils.utcnow()
+        await interaction.message.edit(embed=new_embed, view=None)
+
+    @discord.ui.button(label="❌ Отклонить", style=discord.ButtonStyle.red, custom_id="vacation_reject")
+    async def vacation_reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not has_vacation_mod_role(interaction.user):
+            await interaction.response.send_message("нет прав", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+
+        guild = interaction.guild
+
+        embed = interaction.message.embeds[0]
+        applicant_id = None
+        for field in embed.fields:
+            if field.name == "Участник":
+                import re
+                match = re.search(r"\d{17,20}", field.value)
+                if match:
+                    applicant_id = int(match.group())
+                break
+
+        if not applicant_id:
+            await interaction.followup.send("не удалось найти участника", ephemeral=True)
+            return
+
+        applicant = guild.get_member(applicant_id)
+        if not applicant:
+            await interaction.followup.send("участник не найден на сервере", ephemeral=True)
+            return
+
+        # Уведомление в лс
+        try:
+            await applicant.send("ваша заявка на отпуск отклонена")
+        except discord.Forbidden:
+            pass
+
+        # Редактируем сообщение
+        new_embed = discord.Embed(color=0xff4444)
+        new_embed.description = f"❌ Заявка {applicant.mention} **отклонена** модератором {interaction.user.mention}"
+        new_embed.timestamp = discord.utils.utcnow()
+        await interaction.message.edit(embed=new_embed, view=None)
+
+
+class VacationPanelView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🏖️ Взять отпуск", style=discord.ButtonStyle.green, custom_id="vacation_take")
+    async def vacation_take(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(VacationModal())
+
+    @discord.ui.button(label="🔙 Выйти из отпуска", style=discord.ButtonStyle.grey, custom_id="vacation_return")
+    async def vacation_return(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        vacation_role = guild.get_role(VACATION_ROLE_ID)
+
+        if vacation_role not in interaction.user.roles:
+            await interaction.followup.send("ты не в отпуске", ephemeral=True)
+            return
+
+        try:
+            col = get_vacation_collection()
+            doc = col.find_one({"user_id": str(interaction.user.id)})
+        except Exception as e:
+            await interaction.followup.send("ошибка базы данных", ephemeral=True)
+            print(f"[ERROR] MongoDB vacation: {e}")
+            return
+
+        # Снимаем отпускную роль
+        try:
+            await interaction.user.remove_roles(vacation_role, reason="выход из отпуска")
+        except Exception as e:
+            print(f"[ERROR] снять отпускную роль: {e}")
+
+        # Возвращаем сохранённые роли
+        if doc and doc.get("saved_roles"):
+            roles_to_restore = []
+            for role_id in doc["saved_roles"]:
+                role = guild.get_role(role_id)
+                if role:
+                    roles_to_restore.append(role)
+            if roles_to_restore:
+                try:
+                    await interaction.user.add_roles(*roles_to_restore, reason="выход из отпуска")
+                except Exception as e:
+                    print(f"[ERROR] вернуть роли: {e}")
+
+        # Удаляем запись из БД
+        try:
+            col.delete_one({"user_id": str(interaction.user.id)})
+        except Exception as e:
+            print(f"[ERROR] MongoDB vacation delete: {e}")
+
+        await interaction.followup.send("ты вышел из отпуска, роли возвращены", ephemeral=True)
+
+
+def build_vacation_panel_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🏖️ Заявка на отпуск",
+        description=(
+            "Вы можете подать заявку на отпуск если не будете играть какое-то время по каким-угодно причинам.\n\n"
+            "При одобрении вам будут сняты все роли и выдана <@&1515990627832172665>, "
+            "в любой момент вы можете зайти в этот канал, вернуться из отпуска и вам вернут все роли. "
+            "В форме нужно будет указать срок и причину по которой будете отсутствовать"
+        ),
+        color=0x1ABC9C
+    )
+    return embed
+
 # ═══════════════════════════════════════════════
 # КОМАНДЫ
 # ═══════════════════════════════════════════════
+
+
+@bot.tree.command(name="vacation", description="Отправить панель отпусков")
+async def vacation(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("нет прав", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+
+    channel = interaction.guild.get_channel(VACATION_CHANNEL_ID)
+    if not channel:
+        await interaction.followup.send("канал не найден", ephemeral=True)
+        return
+
+    async for message in channel.history(limit=100):
+        if message.author == bot.user:
+            await message.delete()
+
+    await channel.send(embed=build_vacation_panel_embed(), view=VacationPanelView())
+    await interaction.followup.send("панель отпусков отправлена", ephemeral=True)
+
 
 @bot.tree.command(name="logs", description="Включить или выключить логи")
 async def logs_cmd(interaction: discord.Interaction, type: str):
@@ -1269,6 +1532,8 @@ async def on_ready():
     bot.add_view(TicketPanelView())
     bot.add_view(TicketActionsView())
     bot.add_view(RegView())
+    bot.add_view(VacationPanelView())
+    bot.add_view(VacationApproveView())
     print(f"Бот запущен: {bot.user}")
 
 
