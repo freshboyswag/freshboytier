@@ -1185,12 +1185,11 @@ class VacationApproveView(View):
 
         guild = interaction.guild
 
-        # Получаем айди заявителя из эмбеда
+        # Получаем айди заявителя из эмбеда через regex
         embed = interaction.message.embeds[0]
         applicant_id = None
         for field in embed.fields:
             if field.name == "Участник":
-                import re
                 match = re.search(r"\d{17,20}", field.value)
                 if match:
                     applicant_id = int(match.group())
@@ -1202,8 +1201,11 @@ class VacationApproveView(View):
 
         applicant = guild.get_member(applicant_id)
         if not applicant:
-            await interaction.followup.send("участник не найден на сервере", ephemeral=True)
-            return
+            try:
+                applicant = await guild.fetch_member(applicant_id)
+            except Exception:
+                await interaction.followup.send("участник не найден на сервере", ephemeral=True)
+                return
 
         vacation_role = guild.get_role(VACATION_ROLE_ID)
 
@@ -1221,13 +1223,19 @@ class VacationApproveView(View):
         except Exception as e:
             print(f"[ERROR] MongoDB vacation: {e}")
 
-        # Снимаем все роли и выдаём отпускную
+        # Снимаем все роли
         try:
-            await applicant.remove_roles(*roles_to_save, reason="отпуск")
+            if roles_to_save:
+                await applicant.remove_roles(*roles_to_save, reason="отпуск")
+        except Exception as e:
+            print(f"[ERROR] снять роли: {e}")
+
+        # Выдаём отпускную роль
+        try:
             if vacation_role:
                 await applicant.add_roles(vacation_role, reason="отпуск принят")
         except Exception as e:
-            print(f"[ERROR] роли отпуск: {e}")
+            print(f"[ERROR] выдать отпускную роль: {e}")
 
         # Уведомление в лс
         try:
@@ -1255,7 +1263,6 @@ class VacationApproveView(View):
         applicant_id = None
         for field in embed.fields:
             if field.name == "Участник":
-                import re
                 match = re.search(r"\d{17,20}", field.value)
                 if match:
                     applicant_id = int(match.group())
@@ -1267,8 +1274,11 @@ class VacationApproveView(View):
 
         applicant = guild.get_member(applicant_id)
         if not applicant:
-            await interaction.followup.send("участник не найден на сервере", ephemeral=True)
-            return
+            try:
+                applicant = await guild.fetch_member(applicant_id)
+            except Exception:
+                await interaction.followup.send("участник не найден на сервере", ephemeral=True)
+                return
 
         # Уведомление в лс
         try:
