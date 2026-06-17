@@ -632,6 +632,7 @@ async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
 # ═══════════════════════════════════════════════
 
 REG_ADMIN_ROLES = {1510610350532329642, 1510610391267545138, 1510601395999346819, 1510604555040198816}
+CHECKMARK_EMOJI = "✅"
 
 def has_reg_admin_role(member):
     return any(role.id in REG_ADMIN_ROLES for role in member.roles)
@@ -642,617 +643,183 @@ def get_reg_collection():
 def build_reg_embed(data: dict) -> discord.Embed:
     max_slots = data["max_slots"]
     main_list = data["main_list"]
-    reserve_list = data["reserve_list"]
+    title = data.get("title", "Список")
 
     main_lines = [f"{i}. <@{u['id']}>" for i, u in enumerate(main_list, 1)]
     main_text = "\n".join(main_lines) if main_lines else "пусто"
 
-    reserve_lines = [f"{i}. <@{u['id']}>" for i, u in enumerate(reserve_list, 1)]
-    reserve_text = "\n".join(reserve_lines) if reserve_lines else "пусто"
-
     embed = discord.Embed(
-        title=f"Список ({len(main_list)}/{max_slots})",
+        title=f"{title}",
         color=0x1ABC9C
     )
-    embed.add_field(name="Основной список", value=main_text, inline=False)
-    embed.add_field(name="Замена", value=reserve_text, inline=False)
+    embed.add_field(name=f"Основной список ({len(main_list)}/{max_slots})", value=main_text, inline=False)
     return embed
+
+
+async def get_reg_data(message_id: int):
+    try:
+        col = get_reg_collection()
+        return col.find_one({"message_id": str(message_id)})
+    except Exception as e:
+        print(f"[ERROR] MongoDB reg: {e}")
+        return None
+
+async def save_reg_data(message_id: int, update: dict):
+    try:
+        col = get_reg_collection()
+        col.update_one({"message_id": str(message_id)}, {"$set": update})
+    except Exception as e:
+        print(f"[ERROR] MongoDB reg save: {e}")
+
+async def update_reg_embed(message: discord.Message, data: dict, view=None):
+    try:
+        embed = build_reg_embed(data)
+        await message.edit(embed=embed, view=view)
+    except Exception as e:
+        print(f"[ERROR] update reg embed: {e}")
+
+async def sync_list_from_thread(guild: discord.Guild, thread: discord.Thread, message_id: int, data: dict):
+    """Синхронизирует основной список с галками в ветке."""
+    try:
+        valid_users = []
+        async for msg in thread.history(limit=500, oldest_first=True):
+            if msg.author.bot:
+                continue
+            # Проверяем есть ли + в сообщении
+            if "+" not in msg.content:
+                continue
+            # Проверяем есть ли галка от модера
+            has_check = False
+            for reaction in msg.reactions:
+                if str(reaction.emoji) == CHECKMARK_EMOJI:
+                    async for user in reaction.users():
+                        if not user.bot:
+                            member = guild.get_member(user.id)
+                            if member and has_reg_admin_role(member):
+                                has_check = True
+                                break
+                if has_check:
+                    break
+            if has_check:
+                user_id = str(msg.author.id)
+                # Не дублируем
+                if not any(u["id"] == user_id for u in valid_users):
+                    valid_users.append({"id": user_id, "nick": msg.author.display_name})
+
+        data["main_list"] = valid_users
+        await save_reg_data(message_id, {"main_list": valid_users})
+        return data
+    except Exception as e:
+        print(f"[ERROR] sync_list_from_thread: {e}")
+        return data
+
+
+class ModMenuSelect(discord.ui.Select):
+    def __init__(self, guild: discord.Guild, reg_message: discord.Message, data: dict):
+        self.reg_message = reg_message
+        self.data = data
+        self.guild = guild
+
+        options = [
+            discord.SelectOption(label="📋 Сформировать список", value="form"),
+            discord.SelectOption(label="📣 Тегнуть список", value="tag"),
+            discord.SelectOption(label="🎤 Проверка по войсу", value="voice"),
+        ]
+        super().__init__(placeholder="выберите действие...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        if self.values[0] == "form":
+            # Сформировать список из галок в ветке
+            thread = None
+            if hasattr(self.reg_message, "thread") and self.reg_message.thread:
+                thread = self.reg_message.thread
+            if not thread:
+                await interaction.followup.send("ветка не найдена", ephemeral=True)
+                return
+
+            data = await sync_list_from_thread(interaction.guild, thread, int(self.reg_message.id), self.data)
+            view = RegView()
+            await update_reg_embed(self.reg_message, data, view=view)
+            await interaction.followup.send(f"список сформирован: {len(data['main_list'])} участников", ephemeral=True)
+
+        elif self.values[0] == "tag":
+            data = self.data
+            if not data["main_list"]:
+                await interaction.followup.send("список пуст", ephemeral=True)
+                return
+
+            mentions = " ".join(f"<@{u['id']}>" for u in data["main_list"])
+            thread = None
+            if hasattr(self.reg_message, "thread") and self.reg_message.thread:
+                thread = self.reg_message.thread
+            if thread:
+                await thread.send(mentions)
+                await interaction.followup.send("список тегнут в ветку", ephemeral=True)
+            else:
+                await interaction.followup.send(mentions)
+
+        elif self.values[0] == "voice":
+            data = self.data
+            view = VoiceSelectView(reg_message_id=self.reg_message.id, reg_data=data)
+            await view.setup(interaction.guild)
+            await interaction.followup.send("выберите голосовой канал для проверки:", view=view, ephemeral=True)
+
+
+class ModMenuView(View):
+    def __init__(self, guild: discord.Guild, reg_message: discord.Message, data: dict):
+        super().__init__(timeout=30)
+        self.add_item(ModMenuSelect(guild, reg_message, data))
 
 
 class RegView(View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    async def get_data(self, message_id: int):
+    @discord.ui.button(label="🛠 Мод", style=discord.ButtonStyle.grey, custom_id="reg_mod_menu")
+    async def reg_mod_menu(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not has_reg_admin_role(interaction.user):
+            await interaction.response.send_message("нет прав", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        data = await get_reg_data(interaction.message.id)
+        if not data:
+            await interaction.followup.send("список не найден", ephemeral=True)
+            return
+
+        view = ModMenuView(interaction.guild, interaction.message, data)
+        await interaction.followup.send("выберите действие:", view=view, ephemeral=True)
+
+
+# Фоновая задача — синхронизация списка каждые 20 секунд
+async def reg_sync_loop():
+    import asyncio
+    await bot.wait_until_ready()
+    while not bot.is_closed():
         try:
             col = get_reg_collection()
-            return col.find_one({"message_id": str(message_id)})
+            all_regs = list(col.find({}))
+            for reg in all_regs:
+                try:
+                    channel = bot.get_channel(int(reg["channel_id"]))
+                    if not channel:
+                        continue
+                    msg = await channel.fetch_message(int(reg["message_id"]))
+                    if not msg:
+                        continue
+                    thread = msg.thread if hasattr(msg, "thread") and msg.thread else None
+                    if not thread:
+                        continue
+                    guild = msg.guild
+                    updated = await sync_list_from_thread(guild, thread, int(reg["message_id"]), reg)
+                    await update_reg_embed(msg, updated, view=RegView())
+                except Exception as e:
+                    print(f"[ERROR] reg_sync_loop inner: {e}")
         except Exception as e:
-            print(f"[ERROR] MongoDB reg: {e}")
-            return None
-
-    async def save_data(self, message_id: int, data: dict):
-        try:
-            col = get_reg_collection()
-            col.update_one({"message_id": str(message_id)}, {"$set": data})
-        except Exception as e:
-            print(f"[ERROR] MongoDB reg: {e}")
-
-    async def update_embed(self, interaction: discord.Interaction, data: dict):
-        embed = build_reg_embed(data)
-        await interaction.message.edit(embed=embed, view=self)
-
-    async def log(self, interaction: discord.Interaction, text: str):
-        try:
-            thread = interaction.channel if isinstance(interaction.channel, discord.Thread) else None
-            if not thread:
-                # Ищем ветку под сообщением
-                msg = interaction.message
-                if hasattr(msg, "thread") and msg.thread:
-                    thread = msg.thread
-            if thread:
-                await thread.send(text)
-        except Exception as e:
-            print(f"[ERROR] log thread: {e}")
-
-    @discord.ui.button(label="➕ Кинуть плюс", style=discord.ButtonStyle.green, custom_id="reg_plus")
-    async def reg_plus(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        data = await self.get_data(interaction.message.id)
-        if not data:
-            await interaction.followup.send("список не найден", ephemeral=True)
-            return
-
-        user_id = str(interaction.user.id)
-        user_nick = interaction.user.display_name
-
-        # Проверяем уже в списке
-        in_main = any(u["id"] == user_id for u in data["main_list"])
-        in_reserve = any(u["id"] == user_id for u in data["reserve_list"])
-        if in_main or in_reserve:
-            await interaction.followup.send("ты уже в списке", ephemeral=True)
-            return
-
-        user_entry = {"id": user_id, "nick": user_nick}
-
-        if len(data["main_list"]) < data["max_slots"]:
-            data["main_list"].append(user_entry)
-            await self.save_data(interaction.message.id, {"main_list": data["main_list"]})
-            await self.update_embed(interaction, data)
-            await self.log(interaction, f"{user_nick} добавлен в основной список")
-            await interaction.followup.send("ты добавлен в основной список", ephemeral=True)
-        else:
-            data["reserve_list"].append(user_entry)
-            await self.save_data(interaction.message.id, {"reserve_list": data["reserve_list"]})
-            await self.update_embed(interaction, data)
-            await self.log(interaction, f"{user_nick} добавлен в замену (основной список заполнен)")
-            await interaction.followup.send("основной список заполнен, ты добавлен в замену", ephemeral=True)
-
-    @discord.ui.button(label="📋 Плюс в замену", style=discord.ButtonStyle.blurple, custom_id="reg_reserve")
-    async def reg_reserve(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        data = await self.get_data(interaction.message.id)
-        if not data:
-            await interaction.followup.send("список не найден", ephemeral=True)
-            return
-
-        user_id = str(interaction.user.id)
-        user_nick = interaction.user.display_name
-
-        in_main = any(u["id"] == user_id for u in data["main_list"])
-        in_reserve = any(u["id"] == user_id for u in data["reserve_list"])
-        if in_main or in_reserve:
-            await interaction.followup.send("ты уже в списке", ephemeral=True)
-            return
-
-        user_entry = {"id": user_id, "nick": user_nick}
-        data["reserve_list"].append(user_entry)
-        await self.save_data(interaction.message.id, {"reserve_list": data["reserve_list"]})
-        await self.update_embed(interaction, data)
-        await self.log(interaction, f"{user_nick} добавлен в замену")
-        await interaction.followup.send("ты добавлен в замену", ephemeral=True)
-
-    @discord.ui.button(label="➖ Убрать плюс", style=discord.ButtonStyle.red, custom_id="reg_minus")
-    async def reg_minus(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        data = await self.get_data(interaction.message.id)
-        if not data:
-            await interaction.followup.send("список не найден", ephemeral=True)
-            return
-
-        user_id = str(interaction.user.id)
-        user_nick = interaction.user.display_name
-
-        in_main = any(u["id"] == user_id for u in data["main_list"])
-        in_reserve = any(u["id"] == user_id for u in data["reserve_list"])
-
-        if not in_main and not in_reserve:
-            await interaction.followup.send("тебя нет в списке", ephemeral=True)
-            return
-
-        if in_main:
-            data["main_list"] = [u for u in data["main_list"] if u["id"] != user_id]
-            await self.save_data(interaction.message.id, {"main_list": data["main_list"]})
-            await self.log(interaction, f"{user_nick} убрал плюс из основного списка")
-        else:
-            data["reserve_list"] = [u for u in data["reserve_list"] if u["id"] != user_id]
-            await self.save_data(interaction.message.id, {"reserve_list": data["reserve_list"]})
-            await self.log(interaction, f"{user_nick} убрал плюс из замены")
-
-        await self.update_embed(interaction, data)
-        await interaction.followup.send("плюс убран", ephemeral=True)
-
-    @discord.ui.button(label="🚪 Выписать", style=discord.ButtonStyle.red, custom_id="reg_kick")
-    async def reg_kick(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not has_reg_admin_role(interaction.user):
-            await interaction.response.send_message("нет прав", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-
-        data = await self.get_data(interaction.message.id)
-        if not data:
-            await interaction.followup.send("список не найден", ephemeral=True)
-            return
-
-        prompt = await interaction.channel.send("введите номера участников которых нужно выписать (через пробел, например: 2 6 7 10)")
-
-        def check(m):
-            return m.author.id == interaction.user.id and m.channel.id == interaction.channel.id
-
-        try:
-            import asyncio
-            msg = await bot.wait_for("message", check=check, timeout=60)
-        except asyncio.TimeoutError:
-            await prompt.delete()
-            await interaction.followup.send("время вышло", ephemeral=True)
-            return
-
-        await prompt.delete()
-        await msg.delete()
-
-        try:
-            numbers = [int(n) for n in msg.content.strip().split()]
-        except ValueError:
-            await interaction.followup.send("неверный формат", ephemeral=True)
-            return
-
-        main_list = data["main_list"]
-        kicked = []
-        to_remove = set()
-
-        for num in numbers:
-            idx = num - 1
-            if 0 <= idx < len(main_list):
-                kicked.append(main_list[idx])
-                to_remove.add(idx)
-
-        data["main_list"] = [u for i, u in enumerate(main_list) if i not in to_remove]
-        await self.save_data(interaction.message.id, {"main_list": data["main_list"]})
-        await self.update_embed(interaction, data)
-
-        if kicked:
-            kicked_mentions = " ".join(f"<@{u['id']}>" for u in kicked)
-            await self.log(interaction, f"{interaction.user.display_name} выписал {kicked_mentions}")
-
-        await interaction.followup.send(f"выписано участников: {len(kicked)}", ephemeral=True)
-
-    @discord.ui.button(label="📥 Добавить из замены", style=discord.ButtonStyle.blurple, custom_id="reg_from_reserve")
-    async def reg_from_reserve(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not has_reg_admin_role(interaction.user):
-            await interaction.response.send_message("нет прав", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-
-        data = await self.get_data(interaction.message.id)
-        if not data:
-            await interaction.followup.send("список не найден", ephemeral=True)
-            return
-
-        free_slots = data["max_slots"] - len(data["main_list"])
-        if free_slots <= 0:
-            await interaction.followup.send("нет свободных слотов", ephemeral=True)
-            return
-
-        prompt = await interaction.channel.send(f"введите номера участников из замены которых нужно добавить (через пробел). свободных слотов: {free_slots}")
-
-        def check(m):
-            return m.author.id == interaction.user.id and m.channel.id == interaction.channel.id
-
-        try:
-            import asyncio
-            msg = await bot.wait_for("message", check=check, timeout=60)
-        except asyncio.TimeoutError:
-            await prompt.delete()
-            await interaction.followup.send("время вышло", ephemeral=True)
-            return
-
-        await prompt.delete()
-        await msg.delete()
-
-        try:
-            numbers = [int(n) for n in msg.content.strip().split()]
-        except ValueError:
-            await interaction.followup.send("неверный формат", ephemeral=True)
-            return
-
-        if len(numbers) > free_slots:
-            err = await interaction.channel.send(f"не хватает слотов. запрошено: {len(numbers)}, доступно: {free_slots}")
-            import asyncio
-            await asyncio.sleep(10)
-            await err.delete()
-            return
-
-        reserve_list = data["reserve_list"]
-        added = []
-        to_remove = set()
-
-        for num in numbers:
-            idx = num - 1
-            if 0 <= idx < len(reserve_list):
-                added.append(reserve_list[idx])
-                to_remove.add(idx)
-
-        data["reserve_list"] = [u for i, u in enumerate(reserve_list) if i not in to_remove]
-        data["main_list"].extend(added)
-        await self.save_data(interaction.message.id, {"main_list": data["main_list"], "reserve_list": data["reserve_list"]})
-        await self.update_embed(interaction, data)
-
-        if added:
-            added_mentions = " ".join(f"<@{u['id']}>" for u in added)
-            await self.log(interaction, f"{interaction.user.display_name} добавил из замены {added_mentions}")
-
-        await interaction.followup.send(f"добавлено из замены: {len(added)}", ephemeral=True)
-
-    @discord.ui.button(label="✏️ Добавить вручную", style=discord.ButtonStyle.blurple, custom_id="reg_manual")
-    async def reg_manual(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not has_reg_admin_role(interaction.user):
-            await interaction.response.send_message("нет прав", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-
-        data = await self.get_data(interaction.message.id)
-        if not data:
-            await interaction.followup.send("список не найден", ephemeral=True)
-            return
-
-        free_slots = data["max_slots"] - len(data["main_list"])
-        if free_slots <= 0:
-            await interaction.followup.send("нет свободных слотов", ephemeral=True)
-            return
-
-        prompt = await interaction.channel.send(f"тегните участников которых нужно добавить в список. свободных слотов: {free_slots}")
-
-        def check(m):
-            return m.author.id == interaction.user.id and m.channel.id == interaction.channel.id
-
-        try:
-            import asyncio
-            msg = await bot.wait_for("message", check=check, timeout=60)
-        except asyncio.TimeoutError:
-            await prompt.delete()
-            await interaction.followup.send("время вышло", ephemeral=True)
-            return
-
-        await prompt.delete()
-
-        mentioned = msg.mentions
-        await msg.delete()
-
-        if not mentioned:
-            await interaction.followup.send("никого не упомянуто", ephemeral=True)
-            return
-
-        if len(mentioned) > free_slots:
-            err = await interaction.channel.send(f"не хватает слотов. запрошено: {len(mentioned)}, доступно: {free_slots}")
-            import asyncio
-            await asyncio.sleep(10)
-            await err.delete()
-            return
-
-        added = []
-        for member in mentioned:
-            user_id = str(member.id)
-            in_main = any(u["id"] == user_id for u in data["main_list"])
-            in_reserve = any(u["id"] == user_id for u in data["reserve_list"])
-            if not in_main and not in_reserve:
-                entry = {"id": user_id, "nick": member.display_name}
-                data["main_list"].append(entry)
-                added.append(entry)
-
-        await self.save_data(interaction.message.id, {"main_list": data["main_list"]})
-        await self.update_embed(interaction, data)
-
-        if added:
-            added_mentions = " ".join(f"<@{u['id']}>" for u in added)
-            await self.log(interaction, f"{interaction.user.display_name} добавил вручную {added_mentions}")
-
-        await interaction.followup.send(f"добавлено: {len(added)}", ephemeral=True)
-
-
-    @discord.ui.button(label="📋 Добавить в замену вручную", style=discord.ButtonStyle.blurple, custom_id="reg_manual_reserve")
-    async def reg_manual_reserve(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not has_reg_admin_role(interaction.user):
-            await interaction.response.send_message("нет прав", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-
-        data = await self.get_data(interaction.message.id)
-        if not data:
-            await interaction.followup.send("список не найден", ephemeral=True)
-            return
-
-        prompt = await interaction.channel.send("тегните участников которых нужно добавить в замену")
-
-        def check(m):
-            return m.author.id == interaction.user.id and m.channel.id == interaction.channel.id
-
-        try:
-            import asyncio
-            msg = await bot.wait_for("message", check=check, timeout=60)
-        except asyncio.TimeoutError:
-            await prompt.delete()
-            await interaction.followup.send("время вышло", ephemeral=True)
-            return
-
-        await prompt.delete()
-        mentioned = msg.mentions
-        await msg.delete()
-
-        if not mentioned:
-            await interaction.followup.send("никого не упомянуто", ephemeral=True)
-            return
-
-        added = []
-        for member in mentioned:
-            user_id = str(member.id)
-            in_main = any(u["id"] == user_id for u in data["main_list"])
-            in_reserve = any(u["id"] == user_id for u in data["reserve_list"])
-            if not in_main and not in_reserve:
-                entry = {"id": user_id, "nick": member.display_name}
-                data["reserve_list"].append(entry)
-                added.append(entry)
-
-        await self.save_data(interaction.message.id, {"reserve_list": data["reserve_list"]})
-        await self.update_embed(interaction, data)
-
-        if added:
-            added_mentions = " ".join(f"<@{u['id']}>" for u in added)
-            await self.log(interaction, f"{interaction.user.display_name} добавил в замену вручную {added_mentions}")
-
-        await interaction.followup.send(f"добавлено в замену: {len(added)}", ephemeral=True)
-
-    @discord.ui.button(label="🔄 Переместить в замену", style=discord.ButtonStyle.grey, custom_id="reg_to_reserve")
-    async def reg_to_reserve(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not has_reg_admin_role(interaction.user):
-            await interaction.response.send_message("нет прав", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-
-        data = await self.get_data(interaction.message.id)
-        if not data:
-            await interaction.followup.send("список не найден", ephemeral=True)
-            return
-
-        if not data["main_list"]:
-            await interaction.followup.send("основной список пуст", ephemeral=True)
-            return
-
-        prompt = await interaction.channel.send("введите номера участников из основного списка которых нужно переместить в замену (через пробел)")
-
-        def check(m):
-            return m.author.id == interaction.user.id and m.channel.id == interaction.channel.id
-
-        try:
-            import asyncio
-            msg = await bot.wait_for("message", check=check, timeout=60)
-        except asyncio.TimeoutError:
-            await prompt.delete()
-            await interaction.followup.send("время вышло", ephemeral=True)
-            return
-
-        await prompt.delete()
-        await msg.delete()
-
-        try:
-            numbers = [int(n) for n in msg.content.strip().split()]
-        except ValueError:
-            await interaction.followup.send("неверный формат", ephemeral=True)
-            return
-
-        main_list = data["main_list"]
-        moved = []
-        to_remove = set()
-
-        for num in numbers:
-            idx = num - 1
-            if 0 <= idx < len(main_list):
-                moved.append(main_list[idx])
-                to_remove.add(idx)
-
-        data["main_list"] = [u for i, u in enumerate(main_list) if i not in to_remove]
-        data["reserve_list"].extend(moved)
-
-        await self.save_data(interaction.message.id, {"main_list": data["main_list"], "reserve_list": data["reserve_list"]})
-        await self.update_embed(interaction, data)
-
-        if moved:
-            moved_mentions = " ".join(f"<@{u['id']}>" for u in moved)
-            await self.log(interaction, f"{interaction.user.display_name} переместил в замену {moved_mentions}")
-
-        await interaction.followup.send(f"перемещено в замену: {len(moved)}", ephemeral=True)
-
-    @discord.ui.button(label="📣 Тегнуть список", style=discord.ButtonStyle.grey, custom_id="reg_tag_main")
-    async def reg_tag_main(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not has_reg_admin_role(interaction.user):
-            await interaction.response.send_message("нет прав", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-
-        data = await self.get_data(interaction.message.id)
-        if not data:
-            await interaction.followup.send("список не найден", ephemeral=True)
-            return
-
-        if not data["main_list"]:
-            await interaction.followup.send("основной список пуст", ephemeral=True)
-            return
-
-        mentions = " ".join(f"<@{u['id']}>" for u in data["main_list"])
-
-        # Отправляем в ветку
-        try:
-            msg = interaction.message
-            thread = None
-            if hasattr(msg, "thread") and msg.thread:
-                thread = msg.thread
-            if thread:
-                await thread.send(mentions)
-            else:
-                await interaction.followup.send(mentions, ephemeral=False)
-        except Exception as e:
-            print(f"[ERROR] tag main: {e}")
-
-        await interaction.followup.send("список тегнут в ветку", ephemeral=True)
-
-    @discord.ui.button(label="🎤 Проверка по войсу", style=discord.ButtonStyle.grey, custom_id="reg_voice_check")
-    async def reg_voice_check(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not has_reg_admin_role(interaction.user):
-            await interaction.response.send_message("нет прав", ephemeral=True)
-            return
-
-        data = await self.get_data(interaction.message.id)
-        if not data:
-            await interaction.response.send_message("список не найден", ephemeral=True)
-            return
-
-        # Отправляем select menu с войс каналами
-        view = VoiceSelectView(reg_message_id=interaction.message.id, reg_data=data)
-        await view.setup(interaction.guild)
-        await interaction.response.send_message("выберите голосовой канал для проверки:", view=view, ephemeral=True)
-
-
-# ───────────────────────────────────────────────
-# SELECT MENU ДЛЯ ВЫБОРА ВОЙС КАНАЛА
-# ───────────────────────────────────────────────
-
-VOICE_CHECK_CHANNELS = [
-    1510602284373905540,
-    1510602312647835768,
-    1510607276761940060,
-    1510607301260869702,
-    1510609306498760854,
-    1510609331966709881,
-    1515761158311641099,
-]
-
-class VoiceChannelSelect(discord.ui.Select):
-    def __init__(self, guild: discord.Guild, reg_message_id: int, reg_data: dict):
-        self.reg_message_id = reg_message_id
-        self.reg_data = reg_data
-
-        options = []
-        for ch_id in VOICE_CHECK_CHANNELS:
-            ch = guild.get_channel(ch_id)
-            if ch:
-                options.append(discord.SelectOption(label=ch.name, value=str(ch.id)))
-
-        if not options:
-            options.append(discord.SelectOption(label="каналы не найдены", value="none"))
-
-        super().__init__(
-            placeholder="выберите голосовой канал...",
-            min_values=1,
-            max_values=1,
-            options=options
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-
-        if self.values[0] == "none":
-            await interaction.followup.send("голосовые каналы не найдены", ephemeral=True)
-            return
-
-        voice_channel = interaction.guild.get_channel(int(self.values[0]))
-        if not voice_channel:
-            await interaction.followup.send("канал не найден", ephemeral=True)
-            return
-
-        # Получаем кто сейчас в войсе
-        members_in_voice = {str(m.id) for m in voice_channel.members}
-
-        main_list = self.reg_data["main_list"]
-        reserve_list = self.reg_data["reserve_list"]
-
-        # Проверяем основной список
-        in_voice_main = [u for u in main_list if u["id"] in members_in_voice]
-        not_in_voice_main = [u for u in main_list if u["id"] not in members_in_voice]
-
-        # Проверяем замену
-        in_voice_reserve = [u for u in reserve_list if u["id"] in members_in_voice]
-        not_in_voice_reserve = [u for u in reserve_list if u["id"] not in members_in_voice]
-
-        # Формируем результат
-        lines = []
-        lines.append(f"**Проверка по войсу: {voice_channel.name}**")
-        lines.append("")
-        lines.append(f"**Основной список — присутствуют ({len(in_voice_main)}/{len(main_list)}):**")
-        if in_voice_main:
-            for u in in_voice_main:
-                lines.append("✅ " + u["nick"])
-        else:
-            lines.append("никого")
-        lines.append("")
-        lines.append(f"**Основной список — отсутствуют ({len(not_in_voice_main)}/{len(main_list)}):**")
-        if not_in_voice_main:
-            for u in not_in_voice_main:
-                lines.append("❌ " + u["nick"])
-        else:
-            lines.append("все на месте")
-        if reserve_list:
-            lines.append("")
-            lines.append(f"**Замена — присутствуют ({len(in_voice_reserve)}/{len(reserve_list)}):**")
-            if in_voice_reserve:
-                for u in in_voice_reserve:
-                    lines.append("✅ " + u["nick"])
-            else:
-                lines.append("никого")
-            lines.append("")
-            lines.append(f"**Замена — отсутствуют ({len(not_in_voice_reserve)}/{len(reserve_list)}):**")
-            if not_in_voice_reserve:
-                for u in not_in_voice_reserve:
-                    lines.append("❌ " + u["nick"])
-            else:
-                lines.append("все на месте")
-        result = chr(10).join(lines)
-
-        await interaction.followup.send(result, ephemeral=True)
-
-        # Логируем в ветку
-        try:
-            reg_channel = interaction.guild.get_channel(int(self.reg_data.get("channel_id", 0)))
-            if reg_channel:
-                reg_msg = await reg_channel.fetch_message(self.reg_message_id)
-                if reg_msg and hasattr(reg_msg, "thread") and reg_msg.thread:
-                    present = " ".join(f"<@{u['id']}>" for u in in_voice_main) or "никого"
-                    absent = " ".join(f"<@{u['id']}>" for u in not_in_voice_main) or "все на месте"
-                    log_text = (
-                        f"{interaction.user.display_name} провёл проверку по войсу **{voice_channel.name}**"
-                        + chr(10) + "Отсутствуют: " + absent
-                    )
-                    await reg_msg.thread.send(log_text)
-        except Exception as e:
-            print(f"[ERROR] voice check log: {e}")
-
-
-class VoiceSelectView(View):
-    def __init__(self, reg_message_id: int, reg_data: dict):
-        super().__init__(timeout=30)
-        self.reg_message_id = reg_message_id
-        self.reg_data = reg_data
-
-    async def setup(self, guild: discord.Guild):
-        self.add_item(VoiceChannelSelect(guild, self.reg_message_id, self.reg_data))
+            print(f"[ERROR] reg_sync_loop: {e}")
+        await asyncio.sleep(20)
 
 
 
@@ -1619,7 +1186,7 @@ async def refresh(interaction: discord.Interaction, user: str):
 
 
 @bot.tree.command(name="reg", description="Создать список участников")
-async def reg(interaction: discord.Interaction, slots: int):
+async def reg(interaction: discord.Interaction, title: str, slots: int):
     if not has_reg_admin_role(interaction.user):
         await interaction.response.send_message("нет прав", ephemeral=True)
         return
@@ -1630,17 +1197,17 @@ async def reg(interaction: discord.Interaction, slots: int):
     await interaction.response.defer(ephemeral=True)
 
     data = {
+        "title": title,
         "max_slots": slots,
         "main_list": [],
-        "reserve_list": [],
     }
 
     embed = build_reg_embed(data)
     view = RegView()
     msg = await interaction.channel.send(embed=embed, view=view)
 
-    # Создаём ветку для логов
-    thread = await msg.create_thread(name="логи списка")
+    # Создаём ветку для плюсов
+    thread = await msg.create_thread(name="плюсы")
 
     # Сохраняем в БД
     try:
@@ -1687,6 +1254,7 @@ async def on_ready():
     bot.add_view(TicketPanelView())
     bot.add_view(TicketActionsView())
     bot.add_view(RegView())
+    bot.loop.create_task(reg_sync_loop())
     bot.add_view(VacationPanelView())
     bot.add_view(VacationApproveView())
     print(f"Бот запущен: {bot.user}")
