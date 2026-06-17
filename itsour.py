@@ -1238,7 +1238,6 @@ class VoiceChannelSelect(discord.ui.Select):
                     absent = " ".join(f"<@{u['id']}>" for u in not_in_voice_main) or "все на месте"
                     log_text = (
                         f"{interaction.user.display_name} провёл проверку по войсу **{voice_channel.name}**"
-                        + chr(10) + "Присутствуют: " + present
                         + chr(10) + "Отсутствуют: " + absent
                     )
                     await reg_msg.thread.send(log_text)
