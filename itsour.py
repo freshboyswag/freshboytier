@@ -1249,9 +1249,12 @@ class VacationApproveView(View):
         except discord.Forbidden:
             pass
 
-        # Редактируем сообщение
-        new_embed = discord.Embed(color=0x2ecc71)
-        new_embed.description = f"✅ Заявка {applicant.mention} **одобрена** модератором {interaction.user.mention}"
+        # Редактируем сообщение — сохраняем поля заявки, добавляем результат
+        old_embed = interaction.message.embeds[0]
+        new_embed = discord.Embed(title=old_embed.title, color=0x2ecc71)
+        for field in old_embed.fields:
+            new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
+        new_embed.add_field(name="Решение", value=f"✅ **Одобрена** модератором {interaction.user.mention}", inline=False)
         new_embed.timestamp = discord.utils.utcnow()
         await interaction.message.edit(embed=new_embed, view=None)
 
@@ -1292,9 +1295,12 @@ class VacationApproveView(View):
         except discord.Forbidden:
             pass
 
-        # Редактируем сообщение
-        new_embed = discord.Embed(color=0xff4444)
-        new_embed.description = f"❌ Заявка {applicant.mention} **отклонена** модератором {interaction.user.mention}"
+        # Редактируем сообщение — сохраняем поля заявки, добавляем результат
+        old_embed = interaction.message.embeds[0]
+        new_embed = discord.Embed(title=old_embed.title, color=0xff4444)
+        for field in old_embed.fields:
+            new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
+        new_embed.add_field(name="Решение", value=f"❌ **Отклонена** модератором {interaction.user.mention}", inline=False)
         new_embed.timestamp = discord.utils.utcnow()
         await interaction.message.edit(embed=new_embed, view=None)
 
@@ -1366,6 +1372,78 @@ def build_vacation_panel_embed() -> discord.Embed:
         color=0x1ABC9C
     )
     return embed
+
+
+# ═══════════════════════════════════════════════
+# ЛОГИ ВХОДА/ВЫХОДА С СЕРВЕРА
+# ═══════════════════════════════════════════════
+
+MEMBER_LOG_CHANNEL_ID = 1515644806406340708
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    channel = member.guild.get_channel(MEMBER_LOG_CHANNEL_ID)
+    if not channel:
+        return
+
+    embed = discord.Embed(color=0x2ecc71)
+    embed.set_author(name=f"{member.display_name} зашёл на сервер", icon_url=member.display_avatar.url)
+    embed.add_field(name="Ник", value=member.display_name, inline=True)
+    embed.add_field(name="Юзернейм", value=f"@{member.name}", inline=True)
+    embed.add_field(name="ID", value=str(member.id), inline=True)
+    embed.add_field(name="Аккаунт создан", value=discord.utils.format_dt(member.created_at, style="d"), inline=True)
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.timestamp = discord.utils.utcnow()
+
+    # Сохраняем дату входа в MongoDB
+    try:
+        db = get_db()
+        db["member_joins"].update_one(
+            {"user_id": str(member.id)},
+            {"$set": {"user_id": str(member.id), "joined_at": discord.utils.utcnow().isoformat()}},
+            upsert=True
+        )
+    except Exception as e:
+        print(f"[ERROR] member join log: {e}")
+
+    await channel.send(embed=embed)
+
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    channel = member.guild.get_channel(MEMBER_LOG_CHANNEL_ID)
+    if not channel:
+        return
+
+    embed = discord.Embed(color=0xff4444)
+    embed.set_author(name=f"{member.display_name} вышел с сервера", icon_url=member.display_avatar.url)
+    embed.add_field(name="Ник", value=member.display_name, inline=True)
+    embed.add_field(name="Юзернейм", value=f"@{member.name}", inline=True)
+    embed.add_field(name="ID", value=str(member.id), inline=True)
+    embed.add_field(name="Аккаунт создан", value=discord.utils.format_dt(member.created_at, style="d"), inline=True)
+    embed.set_thumbnail(url=member.display_avatar.url)
+
+    # Считаем сколько пробыл
+    try:
+        db = get_db()
+        doc = db["member_joins"].find_one({"user_id": str(member.id)})
+        if doc and doc.get("joined_at"):
+            from datetime import timezone
+            joined_at = discord.utils.parse_time(doc["joined_at"])
+            now = discord.utils.utcnow()
+            delta = now - joined_at
+            days = delta.days
+            hours = delta.seconds // 3600
+            joined_str = discord.utils.format_dt(joined_at, style="d")
+            embed.add_field(name="Зашёл на сервер", value=joined_str, inline=True)
+            embed.add_field(name="Пробыл", value=f"{days} дн. {hours} ч.", inline=True)
+            db["member_joins"].delete_one({"user_id": str(member.id)})
+    except Exception as e:
+        print(f"[ERROR] member remove log: {e}")
+
+    embed.timestamp = discord.utils.utcnow()
+    await channel.send(embed=embed)
+
 
 # ═══════════════════════════════════════════════
 # КОМАНДЫ
