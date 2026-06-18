@@ -634,8 +634,35 @@ async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
 REG_ADMIN_ROLES = {1510610350532329642, 1510610391267545138, 1510601395999346819, 1510604555040198816}
 CHECKMARK_EMOJI = "✅"
 
+# Тиры — порядок важен (С > А > Б > нотир)
+TIER_ORDER = [
+    ("Tier S", 1510603296321306774),
+    ("Tier A", 1510603326331293846),
+    ("Tier B", 1510603348276023547),
+    ("No Tier", None),
+]
+
+VOICE_CHECK_CHANNELS = [
+    1510602284373905540,
+    1510602312647835768,
+    1510607276761940060,
+    1510607301260869702,
+    1510609306498760854,
+    1510609331966709881,
+    1515761158311641099,
+]
+
 def has_reg_admin_role(member):
     return any(role.id in REG_ADMIN_ROLES for role in member.roles)
+
+def get_tier_label(member: discord.Member) -> str:
+    member_role_ids = {r.id for r in member.roles}
+    for label, role_id in TIER_ORDER:
+        if role_id is None:
+            return label
+        if role_id in member_role_ids:
+            return label
+    return "No Tier"
 
 def get_reg_collection():
     return get_db()["reg_lists"]
@@ -645,14 +672,30 @@ def build_reg_embed(data: dict) -> discord.Embed:
     main_list = data["main_list"]
     title = data.get("title", "Список")
 
-    main_lines = [f"{i}. <@{u['id']}>" for i, u in enumerate(main_list, 1)]
-    main_text = "\n".join(main_lines) if main_lines else "пусто"
+    # Группируем по тирам сохраняя глобальный порядковый номер
+    tier_groups = {label: [] for label, _ in TIER_ORDER}
+    for entry in main_list:
+        tier = entry.get("tier", "No Tier")
+        if tier not in tier_groups:
+            tier = "No Tier"
+        tier_groups[tier].append(entry)
 
-    embed = discord.Embed(
-        title=f"{title}",
-        color=0x1ABC9C
-    )
-    embed.add_field(name=f"Основной список ({len(main_list)}/{max_slots})", value=main_text, inline=False)
+    lines = []
+    counter = 1
+    for label, _ in TIER_ORDER:
+        members = tier_groups[label]
+        if not members:
+            continue
+        lines.append(f"**{label}:**")
+        for u in members:
+            lines.append(f"  {counter}. <@{u['id']}>")
+            counter += 1
+
+    description = f"Основной список {len(main_list)}/{max_slots}"
+    body = "\n".join(lines) if lines else "пусто"
+
+    embed = discord.Embed(title=title, description=description, color=0x1ABC9C)
+    embed.add_field(name="​", value=body, inline=False)
     return embed
 
 
@@ -671,48 +714,307 @@ async def save_reg_data(message_id: int, update: dict):
     except Exception as e:
         print(f"[ERROR] MongoDB reg save: {e}")
 
-async def update_reg_embed(message: discord.Message, data: dict, view=None):
+async def update_reg_embed(message: discord.Message, data: dict):
     try:
         embed = build_reg_embed(data)
-        await message.edit(embed=embed, view=view)
+        await message.edit(embed=embed, view=RegView())
     except Exception as e:
         print(f"[ERROR] update reg embed: {e}")
 
-async def sync_list_from_thread(guild: discord.Guild, thread: discord.Thread, message_id: int, data: dict):
-    """Синхронизирует основной список с галками в ветке."""
+def insert_by_tier(main_list: list, new_entry: dict) -> list:
+    """Вставляет участника в нужное место по тиру."""
+    tier_order_labels = [label for label, _ in TIER_ORDER]
+    new_tier = new_entry.get("tier", "No Tier")
+    new_tier_idx = tier_order_labels.index(new_tier) if new_tier in tier_order_labels else len(tier_order_labels)
+
+    # Находим позицию — после последнего участника с таким же или более высоким тиром
+    insert_pos = len(main_list)
+    for i, u in enumerate(main_list):
+        u_tier = u.get("tier", "No Tier")
+        u_tier_idx = tier_order_labels.index(u_tier) if u_tier in tier_order_labels else len(tier_order_labels)
+        if u_tier_idx > new_tier_idx:
+            insert_pos = i
+            break
+
+    main_list.insert(insert_pos, new_entry)
+    return main_list
+
+async def get_thread_message_reg(thread: discord.Thread, message_id: int):
+    """Находит запись в MongoDB по thread_id."""
     try:
-        valid_users = []
-        async for msg in thread.history(limit=500, oldest_first=True):
-            if msg.author.bot:
-                continue
-            # Проверяем есть ли + в сообщении
-            if "+" not in msg.content:
-                continue
-            # Проверяем есть ли галка от модера
-            has_check = False
-            for reaction in msg.reactions:
-                if str(reaction.emoji) == CHECKMARK_EMOJI:
-                    async for user in reaction.users():
-                        if not user.bot:
-                            member = guild.get_member(user.id)
-                            if member and has_reg_admin_role(member):
-                                has_check = True
-                                break
-                if has_check:
-                    break
-            if has_check:
-                user_id = str(msg.author.id)
-                # Не дублируем
-                if not any(u["id"] == user_id for u in valid_users):
-                    valid_users.append({"id": user_id, "nick": msg.author.display_name})
-
-        data["main_list"] = valid_users
-        await save_reg_data(message_id, {"main_list": valid_users})
-        return data
+        col = get_reg_collection()
+        return col.find_one({"thread_id": str(thread.id)})
     except Exception as e:
-        print(f"[ERROR] sync_list_from_thread: {e}")
-        return data
+        print(f"[ERROR] get_thread_message_reg: {e}")
+        return None
 
+
+# ───────────────────────────────────────────────
+# ИВЕНТЫ ДЛЯ ПЛЮСОВ
+# ───────────────────────────────────────────────
+
+@bot.event
+async def on_message(message: discord.Message):
+    await bot.process_commands(message)
+
+    # Только ветки
+    if not isinstance(message.channel, discord.Thread):
+        return
+    if message.author.bot:
+        return
+    if "+" not in message.content:
+        return
+
+    # Ищем запись по thread_id
+    data = await get_thread_message_reg(message.channel, 0)
+    if not data:
+        return
+
+    # Сохраняем message_id → user_id маппинг для будущего удаления
+    try:
+        col = get_reg_collection()
+        msg_map = data.get("msg_map", {})
+        msg_map[str(message.id)] = str(message.author.id)
+        col.update_one({"_id": data["_id"]}, {"$set": {"msg_map": msg_map}})
+    except Exception as e:
+        print(f"[ERROR] on_message reg: {e}")
+
+
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    if str(payload.emoji) != CHECKMARK_EMOJI:
+        return
+    if payload.user_id == bot.user.id:
+        return
+
+    guild = bot.get_guild(payload.guild_id)
+    if not guild:
+        return
+
+    reactor = guild.get_member(payload.user_id)
+    if not reactor or not has_reg_admin_role(reactor):
+        return
+
+    # Ищем в какой ветке это произошло
+    channel = bot.get_channel(payload.channel_id)
+    if not isinstance(channel, discord.Thread):
+        return
+
+    data = await get_thread_message_reg(channel, 0)
+    if not data:
+        return
+
+    # Получаем сообщение
+    try:
+        msg = await channel.fetch_message(payload.message_id)
+    except Exception:
+        return
+
+    if msg.author.bot or "+" not in msg.content:
+        return
+
+    user_id = str(msg.author.id)
+    main_list = data.get("main_list", [])
+    max_slots = data["max_slots"]
+
+    # Уже в списке?
+    if any(u["id"] == user_id for u in main_list):
+        return
+
+    # Слоты заполнены?
+    if len(main_list) >= max_slots:
+        return
+
+    member = guild.get_member(int(user_id))
+    if not member:
+        try:
+            member = await guild.fetch_member(int(user_id))
+        except Exception:
+            return
+
+    tier = get_tier_label(member)
+    new_entry = {"id": user_id, "nick": member.display_name, "tier": tier}
+    main_list = insert_by_tier(main_list, new_entry)
+
+    data["main_list"] = main_list
+    await save_reg_data(int(data["message_id"]), {"main_list": main_list})
+
+    # Обновляем эмбед
+    try:
+        reg_channel = bot.get_channel(int(data["channel_id"]))
+        reg_msg = await reg_channel.fetch_message(int(data["message_id"]))
+        await update_reg_embed(reg_msg, data)
+    except Exception as e:
+        print(f"[ERROR] update embed on reaction add: {e}")
+
+
+@bot.event
+async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
+    if str(payload.emoji) != CHECKMARK_EMOJI:
+        return
+
+    guild = bot.get_guild(payload.guild_id)
+    if not guild:
+        return
+
+    reactor = guild.get_member(payload.user_id)
+    if not reactor or not has_reg_admin_role(reactor):
+        return
+
+    channel = bot.get_channel(payload.channel_id)
+    if not isinstance(channel, discord.Thread):
+        return
+
+    data = await get_thread_message_reg(channel, 0)
+    if not data:
+        return
+
+    # Находим автора сообщения
+    try:
+        msg = await channel.fetch_message(payload.message_id)
+    except Exception:
+        return
+
+    user_id = str(msg.author.id)
+    main_list = data.get("main_list", [])
+    new_list = [u for u in main_list if u["id"] != user_id]
+
+    if len(new_list) == len(main_list):
+        return  # не было в списке
+
+    data["main_list"] = new_list
+    await save_reg_data(int(data["message_id"]), {"main_list": new_list})
+
+    try:
+        reg_channel = bot.get_channel(int(data["channel_id"]))
+        reg_msg = await reg_channel.fetch_message(int(data["message_id"]))
+        await update_reg_embed(reg_msg, data)
+    except Exception as e:
+        print(f"[ERROR] update embed on reaction remove: {e}")
+
+
+@bot.event
+async def on_raw_message_delete(payload: discord.RawMessageDeleteEvent):
+    channel = bot.get_channel(payload.channel_id)
+    if not isinstance(channel, discord.Thread):
+        return
+
+    data = await get_thread_message_reg(channel, 0)
+    if not data:
+        return
+
+    msg_map = data.get("msg_map", {})
+    user_id = msg_map.get(str(payload.message_id))
+    if not user_id:
+        return
+
+    main_list = data.get("main_list", [])
+    new_list = [u for u in main_list if u["id"] != user_id]
+
+    if len(new_list) == len(main_list):
+        return
+
+    # Убираем из маппинга
+    msg_map.pop(str(payload.message_id), None)
+    data["main_list"] = new_list
+
+    await save_reg_data(int(data["message_id"]), {"main_list": new_list, "msg_map": msg_map})
+
+    try:
+        reg_channel = bot.get_channel(int(data["channel_id"]))
+        reg_msg = await reg_channel.fetch_message(int(data["message_id"]))
+        await update_reg_embed(reg_msg, data)
+    except Exception as e:
+        print(f"[ERROR] update embed on message delete: {e}")
+
+
+# ───────────────────────────────────────────────
+# ПРОВЕРКА ПО ВОЙСУ
+# ───────────────────────────────────────────────
+
+class VoiceChannelSelect(discord.ui.Select):
+    def __init__(self, guild: discord.Guild, reg_message_id: int, reg_data: dict):
+        self.reg_message_id = reg_message_id
+        self.reg_data = reg_data
+
+        options = []
+        for ch_id in VOICE_CHECK_CHANNELS:
+            ch = guild.get_channel(ch_id)
+            if ch:
+                options.append(discord.SelectOption(label=ch.name, value=str(ch.id)))
+
+        if not options:
+            options.append(discord.SelectOption(label="каналы не найдены", value="none"))
+
+        super().__init__(placeholder="выберите голосовой канал...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        if self.values[0] == "none":
+            await interaction.followup.send("голосовые каналы не найдены", ephemeral=True)
+            return
+
+        voice_channel = interaction.guild.get_channel(int(self.values[0]))
+        if not voice_channel:
+            await interaction.followup.send("канал не найден", ephemeral=True)
+            return
+
+        members_in_voice = {str(m.id) for m in voice_channel.members}
+        main_list = self.reg_data.get("main_list", [])
+
+        in_voice = [u for u in main_list if u["id"] in members_in_voice]
+        not_in_voice = [u for u in main_list if u["id"] not in members_in_voice]
+
+        lines = []
+        lines.append(f"**Проверка по войсу: {voice_channel.name}**")
+        lines.append("")
+        lines.append(f"**Присутствуют ({len(in_voice)}/{len(main_list)}):**")
+        if in_voice:
+            for u in in_voice:
+                lines.append("✅ " + u["nick"])
+        else:
+            lines.append("никого")
+        lines.append("")
+        lines.append(f"**Отсутствуют ({len(not_in_voice)}/{len(main_list)}):**")
+        if not_in_voice:
+            for u in not_in_voice:
+                lines.append("❌ " + u["nick"])
+        else:
+            lines.append("все на месте")
+
+        result = "\n".join(lines)
+        await interaction.followup.send(result, ephemeral=True)
+
+        # Лог в ветку — тегаем только отсутствующих
+        try:
+            reg_channel = interaction.guild.get_channel(int(self.reg_data.get("channel_id", 0)))
+            if reg_channel:
+                reg_msg = await reg_channel.fetch_message(self.reg_message_id)
+                if reg_msg and reg_msg.thread:
+                    absent_mentions = " ".join(f"<@{u['id']}>" for u in not_in_voice)
+                    log_text = (
+                        f"{interaction.user.display_name} провёл проверку по войсу **{voice_channel.name}**"
+                        + (f"Отсутствуют: {absent_mentions}" if absent_mentions else "Все присутствуют")
+                    )
+                    await reg_msg.thread.send(log_text)
+        except Exception as e:
+            print(f"[ERROR] voice check log: {e}")
+
+
+class VoiceSelectView(View):
+    def __init__(self, reg_message_id: int, reg_data: dict):
+        super().__init__(timeout=30)
+        self.reg_message_id = reg_message_id
+        self.reg_data = reg_data
+
+    async def setup(self, guild: discord.Guild):
+        self.add_item(VoiceChannelSelect(guild, self.reg_message_id, self.reg_data))
+
+
+# ───────────────────────────────────────────────
+# МОД МЕНЮ
+# ───────────────────────────────────────────────
 
 class ModMenuSelect(discord.ui.Select):
     def __init__(self, guild: discord.Guild, reg_message: discord.Message, data: dict):
@@ -731,29 +1033,51 @@ class ModMenuSelect(discord.ui.Select):
         await interaction.response.defer(ephemeral=True)
 
         if self.values[0] == "form":
-            # Сформировать список из галок в ветке
-            thread = None
-            if hasattr(self.reg_message, "thread") and self.reg_message.thread:
-                thread = self.reg_message.thread
+            thread = self.reg_message.thread if hasattr(self.reg_message, "thread") and self.reg_message.thread else None
             if not thread:
                 await interaction.followup.send("ветка не найдена", ephemeral=True)
                 return
 
-            data = await sync_list_from_thread(interaction.guild, thread, int(self.reg_message.id), self.data)
-            view = RegView()
-            await update_reg_embed(self.reg_message, data, view=view)
-            await interaction.followup.send(f"список сформирован: {len(data['main_list'])} участников", ephemeral=True)
+            # Полная пересборка списка из ветки
+            valid_users = []
+            async for msg in thread.history(limit=500, oldest_first=True):
+                if msg.author.bot or "+" not in msg.content:
+                    continue
+                has_check = False
+                for reaction in msg.reactions:
+                    if str(reaction.emoji) == CHECKMARK_EMOJI:
+                        async for user in reaction.users():
+                            if not user.bot:
+                                m = interaction.guild.get_member(user.id)
+                                if m and has_reg_admin_role(m):
+                                    has_check = True
+                                    break
+                    if has_check:
+                        break
+                if has_check:
+                    uid = str(msg.author.id)
+                    if not any(u["id"] == uid for u in valid_users):
+                        member = interaction.guild.get_member(int(uid))
+                        if not member:
+                            try:
+                                member = await interaction.guild.fetch_member(int(uid))
+                            except Exception:
+                                continue
+                        tier = get_tier_label(member)
+                        valid_users = insert_by_tier(valid_users, {"id": uid, "nick": member.display_name, "tier": tier})
+
+            self.data["main_list"] = valid_users
+            await save_reg_data(int(self.reg_message.id), {"main_list": valid_users})
+            await update_reg_embed(self.reg_message, self.data)
+            await interaction.followup.send(f"список сформирован: {len(valid_users)} участников", ephemeral=True)
 
         elif self.values[0] == "tag":
-            data = self.data
-            if not data["main_list"]:
+            main_list = self.data.get("main_list", [])
+            if not main_list:
                 await interaction.followup.send("список пуст", ephemeral=True)
                 return
-
-            mentions = " ".join(f"<@{u['id']}>" for u in data["main_list"])
-            thread = None
-            if hasattr(self.reg_message, "thread") and self.reg_message.thread:
-                thread = self.reg_message.thread
+            mentions = " ".join(f"<@{u['id']}>" for u in main_list)
+            thread = self.reg_message.thread if hasattr(self.reg_message, "thread") and self.reg_message.thread else None
             if thread:
                 await thread.send(mentions)
                 await interaction.followup.send("список тегнут в ветку", ephemeral=True)
@@ -761,8 +1085,7 @@ class ModMenuSelect(discord.ui.Select):
                 await interaction.followup.send(mentions)
 
         elif self.values[0] == "voice":
-            data = self.data
-            view = VoiceSelectView(reg_message_id=self.reg_message.id, reg_data=data)
+            view = VoiceSelectView(reg_message_id=self.reg_message.id, reg_data=self.data)
             await view.setup(interaction.guild)
             await interaction.followup.send("выберите голосовой канал для проверки:", view=view, ephemeral=True)
 
@@ -791,35 +1114,6 @@ class RegView(View):
 
         view = ModMenuView(interaction.guild, interaction.message, data)
         await interaction.followup.send("выберите действие:", view=view, ephemeral=True)
-
-
-# Фоновая задача — синхронизация списка каждые 20 секунд
-async def reg_sync_loop():
-    import asyncio
-    await bot.wait_until_ready()
-    while not bot.is_closed():
-        try:
-            col = get_reg_collection()
-            all_regs = list(col.find({}))
-            for reg in all_regs:
-                try:
-                    channel = bot.get_channel(int(reg["channel_id"]))
-                    if not channel:
-                        continue
-                    msg = await channel.fetch_message(int(reg["message_id"]))
-                    if not msg:
-                        continue
-                    thread = msg.thread if hasattr(msg, "thread") and msg.thread else None
-                    if not thread:
-                        continue
-                    guild = msg.guild
-                    updated = await sync_list_from_thread(guild, thread, int(reg["message_id"]), reg)
-                    await update_reg_embed(msg, updated, view=RegView())
-                except Exception as e:
-                    print(f"[ERROR] reg_sync_loop inner: {e}")
-        except Exception as e:
-            print(f"[ERROR] reg_sync_loop: {e}")
-        await asyncio.sleep(20)
 
 
 
