@@ -993,9 +993,10 @@ class VoiceChannelSelect(discord.ui.Select):
                 reg_msg = await reg_channel.fetch_message(self.reg_message_id)
                 if reg_msg and reg_msg.thread:
                     absent_mentions = " ".join(f"<@{u['id']}>" for u in not_in_voice)
+                    absent_line = f"Отсутствуют: {absent_mentions}" if absent_mentions else "Все присутствуют"
                     log_text = (
                         f"{interaction.user.display_name} провёл проверку по войсу **{voice_channel.name}**"
-                        + (f"Отсутствуют: {absent_mentions}" if absent_mentions else "Все присутствуют")
+                        + chr(10) + absent_line
                     )
                     await reg_msg.thread.send(log_text)
         except Exception as e:
@@ -1382,6 +1383,8 @@ MEMBER_LOG_CHANNEL_ID = 1515644806406340708
 
 @bot.event
 async def on_member_join(member: discord.Member):
+    if not is_log_enabled("joins"):
+        return
     channel = member.guild.get_channel(MEMBER_LOG_CHANNEL_ID)
     if not channel:
         return
@@ -1389,9 +1392,11 @@ async def on_member_join(member: discord.Member):
     embed = discord.Embed(color=0x2ecc71)
     embed.set_author(name=f"{member.display_name} зашёл на сервер", icon_url=member.display_avatar.url)
     embed.add_field(name="Ник", value=member.display_name, inline=True)
+    embed.add_field(name="Упоминание", value=member.mention, inline=True)
     embed.add_field(name="Юзернейм", value=f"@{member.name}", inline=True)
     embed.add_field(name="ID", value=str(member.id), inline=True)
-    embed.add_field(name="Аккаунт создан", value=discord.utils.format_dt(member.created_at, style="d"), inline=True)
+    embed.add_field(name="Аккаунт создан", value=discord.utils.format_dt(member.created_at, style="D"), inline=True)
+    embed.add_field(name="Зашёл", value=discord.utils.format_dt(discord.utils.utcnow(), style="f"), inline=True)
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.timestamp = discord.utils.utcnow()
 
@@ -1411,6 +1416,8 @@ async def on_member_join(member: discord.Member):
 
 @bot.event
 async def on_member_remove(member: discord.Member):
+    if not is_log_enabled("joins"):
+        return
     channel = member.guild.get_channel(MEMBER_LOG_CHANNEL_ID)
     if not channel:
         return
@@ -1418,9 +1425,10 @@ async def on_member_remove(member: discord.Member):
     embed = discord.Embed(color=0xff4444)
     embed.set_author(name=f"{member.display_name} вышел с сервера", icon_url=member.display_avatar.url)
     embed.add_field(name="Ник", value=member.display_name, inline=True)
+    embed.add_field(name="Упоминание", value=member.mention, inline=True)
     embed.add_field(name="Юзернейм", value=f"@{member.name}", inline=True)
     embed.add_field(name="ID", value=str(member.id), inline=True)
-    embed.add_field(name="Аккаунт создан", value=discord.utils.format_dt(member.created_at, style="d"), inline=True)
+    embed.add_field(name="Аккаунт создан", value=discord.utils.format_dt(member.created_at, style="D"), inline=True)
     embed.set_thumbnail(url=member.display_avatar.url)
 
     # Считаем сколько пробыл
@@ -1428,13 +1436,12 @@ async def on_member_remove(member: discord.Member):
         db = get_db()
         doc = db["member_joins"].find_one({"user_id": str(member.id)})
         if doc and doc.get("joined_at"):
-            from datetime import timezone
             joined_at = discord.utils.parse_time(doc["joined_at"])
             now = discord.utils.utcnow()
             delta = now - joined_at
             days = delta.days
             hours = delta.seconds // 3600
-            joined_str = discord.utils.format_dt(joined_at, style="d")
+            joined_str = discord.utils.format_dt(joined_at, style="f")
             embed.add_field(name="Зашёл на сервер", value=joined_str, inline=True)
             embed.add_field(name="Пробыл", value=f"{days} дн. {hours} ч.", inline=True)
             db["member_joins"].delete_one({"user_id": str(member.id)})
@@ -1450,26 +1457,6 @@ async def on_member_remove(member: discord.Member):
 # ═══════════════════════════════════════════════
 
 
-@bot.tree.command(name="vacation", description="Отправить панель отпусков")
-async def vacation(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("нет прав", ephemeral=True)
-        return
-    await interaction.response.defer(ephemeral=True)
-
-    channel = interaction.guild.get_channel(VACATION_CHANNEL_ID)
-    if not channel:
-        await interaction.followup.send("канал не найден", ephemeral=True)
-        return
-
-    async for message in channel.history(limit=100):
-        if message.author == bot.user:
-            await message.delete()
-
-    await channel.send(embed=build_vacation_panel_embed(), view=VacationPanelView())
-    await interaction.followup.send("панель отпусков отправлена", ephemeral=True)
-
-
 @bot.tree.command(name="logs", description="Включить или выключить логи")
 async def logs_cmd(interaction: discord.Interaction, type: str):
     if not interaction.user.guild_permissions.administrator:
@@ -1478,7 +1465,7 @@ async def logs_cmd(interaction: discord.Interaction, type: str):
 
     await interaction.response.defer(ephemeral=True)
 
-    allowed = ["voice"]
+    allowed = ["voice", "joins"]
     if type not in allowed:
         await interaction.followup.send(f"неизвестный тип. доступные: {', '.join(allowed)}", ephemeral=True)
         return
@@ -1489,44 +1476,46 @@ async def logs_cmd(interaction: discord.Interaction, type: str):
     await interaction.followup.send(f"логи `{type}` {status}", ephemeral=True)
 
 
-@bot.tree.command(name="starts", description="Отправить панель личных каналов")
-async def starts(interaction: discord.Interaction):
+@bot.tree.command(name="panels", description="Отправить панель в нужный канал")
+async def panels(interaction: discord.Interaction, panel: str):
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("нет прав", ephemeral=True)
         return
+
+    allowed = ["tickets", "otpusk", "private", "all"]
+    if panel not in allowed:
+        await interaction.response.send_message(f"неизвестная панель. доступные: {', '.join(allowed)}", ephemeral=True)
+        return
+
     await interaction.response.defer(ephemeral=True)
+    sent = []
 
-    channel = interaction.guild.get_channel(PANEL_CHANNEL_ID)
-    if not channel:
-        await interaction.followup.send("канал не найден", ephemeral=True)
-        return
+    async def send_panel(channel_id, embed_fn, view_fn):
+        ch = interaction.guild.get_channel(channel_id)
+        if not ch:
+            return False
+        async for message in ch.history(limit=100):
+            if message.author == bot.user:
+                await message.delete()
+        await ch.send(embed=embed_fn(), view=view_fn())
+        return True
 
-    async for message in channel.history(limit=100):
-        if message.author == bot.user:
-            await message.delete()
+    if panel in ("private", "all"):
+        ok = await send_panel(PANEL_CHANNEL_ID, build_panel_embed, PanelView)
+        if ok:
+            sent.append("private")
 
-    await channel.send(embed=build_panel_embed(), view=PanelView())
-    await interaction.followup.send("панель отправлена", ephemeral=True)
+    if panel in ("tickets", "all"):
+        ok = await send_panel(TICKETS_CHANNEL_ID, build_ticket_panel_embed, TicketPanelView)
+        if ok:
+            sent.append("tickets")
 
+    if panel in ("otpusk", "all"):
+        ok = await send_panel(VACATION_CHANNEL_ID, build_vacation_panel_embed, VacationPanelView)
+        if ok:
+            sent.append("otpusk")
 
-@bot.tree.command(name="tickets", description="Отправить панель заявок в канал tickets")
-async def tickets(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("нет прав", ephemeral=True)
-        return
-    await interaction.response.defer(ephemeral=True)
-
-    channel = interaction.guild.get_channel(TICKETS_CHANNEL_ID)
-    if not channel:
-        await interaction.followup.send("канал tickets не найден", ephemeral=True)
-        return
-
-    async for message in channel.history(limit=100):
-        if message.author == bot.user:
-            await message.delete()
-
-    await channel.send(embed=build_ticket_panel_embed(), view=TicketPanelView())
-    await interaction.followup.send("панель заявок отправлена", ephemeral=True)
+    await interaction.followup.send(f"отправлено: {', '.join(sent) if sent else 'ничего'}", ephemeral=True)
 
 
 @bot.tree.command(name="refresh", description="Сбросить квоту на создание канала")
