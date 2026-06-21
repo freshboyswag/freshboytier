@@ -1081,29 +1081,48 @@ class VoiceChannelSelect(discord.ui.Select):
         result = "\n".join(lines)
         await interaction.followup.send(result, ephemeral=True)
 
-        # Лог в ветку "плюсы" — тегаем только отсутствующих
+        # Полный лог без тегов — общий текст для обеих веток
+        full_log_lines = []
+        full_log_lines.append(f"**{interaction.user.display_name} провёл проверку по войсу: {voice_channel.name}**")
+        full_log_lines.append("")
+        full_log_lines.append(f"**Присутствуют ({len(in_voice)}/{len(main_list)}):**")
+        if in_voice:
+            for u in in_voice:
+                full_log_lines.append("✅ " + u["nick"])
+        else:
+            full_log_lines.append("никого")
+        full_log_lines.append("")
+        full_log_lines.append(f"**Отсутствуют ({len(not_in_voice)}/{len(main_list)}):**")
+        if not_in_voice:
+            for u in not_in_voice:
+                full_log_lines.append("❌ " + u["nick"])
+        else:
+            full_log_lines.append("все на месте")
+        full_log_text = "\n".join(full_log_lines)
+
+        # Лог в ветку "плюсы" — полный формат без тегов
         try:
             reg_channel = interaction.guild.get_channel(int(self.reg_data.get("channel_id", 0)))
             if reg_channel:
                 reg_msg = await reg_channel.fetch_message(self.reg_message_id)
                 if reg_msg and reg_msg.thread:
-                    absent_mentions = " ".join(f"<@{u['id']}>" for u in not_in_voice)
-                    absent_line = f"Отсутствуют: {absent_mentions}" if absent_mentions else "Все присутствуют"
-                    log_text = (
-                        f"{interaction.user.display_name} провёл проверку по войсу **{voice_channel.name}**"
-                        + chr(10) + absent_line
-                    )
-                    await reg_msg.thread.send(log_text)
+                    await reg_msg.thread.send(full_log_text)
         except Exception as e:
             print(f"[ERROR] voice check log: {e}")
 
-        # Лог в МП лог-ветку — без тегов, только ники
-        absent_nicks = ", ".join(u["nick"] for u in not_in_voice) if not_in_voice else "никого, все присутствуют"
-        mp_log_text = (
-            f"{interaction.user.display_name} провёл проверку по войсу {voice_channel.name}"
-            + chr(10) + f"Отсутствуют: {absent_nicks}"
-        )
-        await log_mp_event(self.reg_data, mp_log_text)
+        # Отдельное сообщение с тегами отсутствующих — отправляется в канал (не ветку)
+        try:
+            absent_mentions = " ".join(f"<@{u['id']}>" for u in not_in_voice)
+            if absent_mentions:
+                tag_text = f"Отсутствую и тегнуты в канал: {absent_mentions}"
+                reg_channel = interaction.guild.get_channel(int(self.reg_data.get("channel_id", 0)))
+                if reg_channel:
+                    await reg_channel.send(tag_text)
+        except Exception as e:
+            print(f"[ERROR] voice check tag absent: {e}")
+
+        # Лог в МП лог-ветку — тот же полный формат без тегов
+        await log_mp_event(self.reg_data, full_log_text)
 
 
 class VoiceSelectView(View):
@@ -1181,6 +1200,13 @@ class ModMenuSelect(discord.ui.Select):
             self.data["main_list"] = valid_users
             await save_reg_data(int(self.reg_message.id), {"main_list": valid_users})
             await update_reg_embed(self.reg_message, self.data)
+
+            # Лог в ветку "плюсы" — сформировал список
+            list_lines = [f"{interaction.user.display_name} сформировал список из {len(valid_users)} человек:"]
+            for u in valid_users:
+                list_lines.append(u["nick"])
+            await thread.send("\n".join(list_lines))
+
             await interaction.followup.send(f"список сформирован: {len(valid_users)} участников", ephemeral=True)
 
         elif self.values[0] == "tag":
@@ -1259,7 +1285,13 @@ class ModMenuSelect(discord.ui.Select):
             except Exception as e:
                 print(f"[ERROR] close plus thread: {e}")
 
-            # Лог-ветка МП
+            # Лог-ветка МП — итоговый список перед закрытием
+            main_list = self.data.get("main_list", [])
+            final_lines = [f"Итоговый список перед закрытием ({len(main_list)} человек):"]
+            for u in main_list:
+                final_lines.append(u["nick"])
+            await log_mp_event(self.data, "\n".join(final_lines))
+
             await log_mp_event(self.data, f"Мероприятие закрыто {interaction.user.display_name}")
             try:
                 mp_log_thread_id = self.data.get("mp_log_thread_id")
