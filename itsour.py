@@ -1081,7 +1081,23 @@ class VoiceChannelSelect(discord.ui.Select):
         result = "\n".join(lines)
         await interaction.followup.send(result, ephemeral=True)
 
-        # Полный лог без тегов — общий текст для обеих веток
+        # Короткий лог с тегами в ветку "плюсы"
+        try:
+            reg_channel = interaction.guild.get_channel(int(self.reg_data.get("channel_id", 0)))
+            if reg_channel:
+                reg_msg = await reg_channel.fetch_message(self.reg_message_id)
+                if reg_msg and reg_msg.thread:
+                    absent_mentions = " ".join(f"<@{u['id']}>" for u in not_in_voice)
+                    absent_line = f"Отсутствуют: {absent_mentions}" if absent_mentions else "Все присутствуют"
+                    short_log_text = (
+                        f"{interaction.user.display_name} провёл проверку по войсу {voice_channel.name}"
+                        + chr(10) + absent_line
+                    )
+                    await reg_msg.thread.send(short_log_text)
+        except Exception as e:
+            print(f"[ERROR] voice check log: {e}")
+
+        # Полный лог без тегов в лог-ветку МП
         full_log_lines = []
         full_log_lines.append(f"**{interaction.user.display_name} провёл проверку по войсу: {voice_channel.name}**")
         full_log_lines.append("")
@@ -1100,29 +1116,11 @@ class VoiceChannelSelect(discord.ui.Select):
             full_log_lines.append("все на месте")
         full_log_text = "\n".join(full_log_lines)
 
-        # Лог в ветку "плюсы" — полный формат без тегов
-        try:
-            reg_channel = interaction.guild.get_channel(int(self.reg_data.get("channel_id", 0)))
-            if reg_channel:
-                reg_msg = await reg_channel.fetch_message(self.reg_message_id)
-                if reg_msg and reg_msg.thread:
-                    await reg_msg.thread.send(full_log_text)
-        except Exception as e:
-            print(f"[ERROR] voice check log: {e}")
-
-        # Отдельное сообщение с тегами отсутствующих — отправляется в канал (не ветку)
-        try:
-            absent_mentions = " ".join(f"<@{u['id']}>" for u in not_in_voice)
-            if absent_mentions:
-                tag_text = f"Отсутствую и тегнуты в канал: {absent_mentions}"
-                reg_channel = interaction.guild.get_channel(int(self.reg_data.get("channel_id", 0)))
-                if reg_channel:
-                    await reg_channel.send(tag_text)
-        except Exception as e:
-            print(f"[ERROR] voice check tag absent: {e}")
-
-        # Лог в МП лог-ветку — тот же полный формат без тегов
         await log_mp_event(self.reg_data, full_log_text)
+
+        absent_nicks = ", ".join(u["nick"] for u in not_in_voice)
+        if absent_nicks:
+            await log_mp_event(self.reg_data, f"Отсутствую и тегнуты в канал: {absent_nicks}")
 
 
 class VoiceSelectView(View):
