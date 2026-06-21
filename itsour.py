@@ -633,6 +633,8 @@ async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
 
 REG_ADMIN_ROLES = {1510610350532329642, 1510610391267545138, 1510601395999346819, 1510604555040198816}
 CHECKMARK_EMOJI = "✅"
+MP_LOGS_CHANNEL_ID = 1518245288547192962
+MP_RETENTION_DAYS = 14
 
 # Тиры — порядок важен (С > А > Б > нотир)
 TIER_ORDER = [
@@ -667,12 +669,38 @@ def get_tier_label(member: discord.Member) -> str:
 def get_reg_collection():
     return get_db()["reg_lists"]
 
+def get_counters_collection():
+    return get_db()["counters"]
+
+async def get_next_mp_number() -> int:
+    try:
+        from pymongo import ReturnDocument
+        col = get_counters_collection()
+        doc = col.find_one_and_update(
+            {"_id": "mp_counter"},
+            {"$inc": {"value": 1}},
+            upsert=True,
+            return_document=ReturnDocument.AFTER
+        )
+        return doc["value"]
+    except Exception as e:
+        print(f"[ERROR] get_next_mp_number: {e}")
+        return 0
+
 def build_reg_embed(data: dict) -> discord.Embed:
     max_slots = data["max_slots"]
     main_list = data["main_list"]
     title = data.get("title", "Список")
+    mp_number = data.get("mp_number", "?")
+    closed = data.get("closed", False)
 
-    # Группируем по тирам сохраняя глобальный порядковый номер
+    if closed:
+        embed = discord.Embed(
+            title=f"Мероприятие #{mp_number} закрыто",
+            color=0xff4444
+        )
+        return embed
+
     tier_groups = {label: [] for label, _ in TIER_ORDER}
     for entry in main_list:
         tier = entry.get("tier", "No Tier")
@@ -688,14 +716,50 @@ def build_reg_embed(data: dict) -> discord.Embed:
             continue
         lines.append(f"**{label}:**")
         for u in members:
-            lines.append(f"  {counter}. <@{u['id']}>")
+            lines.append(f"\u00a0\u00a0{counter}. <@{u['id']}>")
             counter += 1
 
     description = f"Основной список {len(main_list)}/{max_slots}"
     body = "\n".join(lines) if lines else "пусто"
 
-    embed = discord.Embed(title=title, description=description, color=0x1ABC9C)
-    embed.add_field(name="​", value=body, inline=False)
+    embed = discord.Embed(title=f"#{mp_number} {title}", description=description, color=0x1ABC9C)
+    embed.add_field(name="\u200b", value=body, inline=False)
+    return embed
+
+
+def build_mp_log_embed(data: dict, closed: bool = False) -> discord.Embed:
+    mp_number = data.get("mp_number", "?")
+    title = data.get("title", "Список")
+    max_slots = data.get("max_slots", "?")
+    creator_id = data.get("creator_id")
+    created_at = data.get("created_at")
+
+    embed = discord.Embed(
+        title=f"Мероприятие #{mp_number}",
+        color=0xff4444 if closed else 0x2ecc71
+    )
+    embed.add_field(name="Название", value=title, inline=False)
+    embed.add_field(name="Слотов", value=str(max_slots), inline=True)
+    if creator_id:
+        embed.add_field(name="Создал", value=f"<@{creator_id}>", inline=True)
+    if created_at:
+        try:
+            dt = discord.utils.parse_time(created_at)
+            embed.add_field(name="Дата создания", value=discord.utils.format_dt(dt, style="f"), inline=True)
+        except Exception:
+            pass
+    if closed:
+        closer_id = data.get("closer_id")
+        closed_at = data.get("closed_at")
+        if closer_id:
+            embed.add_field(name="Закрыл", value=f"<@{closer_id}>", inline=True)
+        if closed_at:
+            try:
+                dt = discord.utils.parse_time(closed_at)
+                embed.add_field(name="Дата закрытия", value=discord.utils.format_dt(dt, style="f"), inline=True)
+            except Exception:
+                pass
+    embed.timestamp = discord.utils.utcnow()
     return embed
 
 
@@ -717,17 +781,32 @@ async def save_reg_data(message_id: int, update: dict):
 async def update_reg_embed(message: discord.Message, data: dict):
     try:
         embed = build_reg_embed(data)
-        await message.edit(embed=embed, view=RegView())
+        view = RegView() if not data.get("closed") else RegView()
+        await message.edit(embed=embed, view=view)
     except Exception as e:
         print(f"[ERROR] update reg embed: {e}")
 
+async def log_mp_event(data: dict, text: str):
+    """Отправляет строку лога в лог-ветку МП (в канале MP_LOGS_CHANNEL_ID)."""
+    try:
+        mp_log_thread_id = data.get("mp_log_thread_id")
+        if not mp_log_thread_id:
+            return
+        thread = bot.get_channel(int(mp_log_thread_id))
+        if not thread:
+            log_channel = bot.get_channel(MP_LOGS_CHANNEL_ID)
+            if log_channel:
+                thread = await bot.fetch_channel(int(mp_log_thread_id))
+        if thread:
+            await thread.send(text)
+    except Exception as e:
+        print(f"[ERROR] log_mp_event: {e}")
+
 def insert_by_tier(main_list: list, new_entry: dict) -> list:
-    """Вставляет участника в нужное место по тиру."""
     tier_order_labels = [label for label, _ in TIER_ORDER]
     new_tier = new_entry.get("tier", "No Tier")
     new_tier_idx = tier_order_labels.index(new_tier) if new_tier in tier_order_labels else len(tier_order_labels)
 
-    # Находим позицию — после последнего участника с таким же или более высоким тиром
     insert_pos = len(main_list)
     for i, u in enumerate(main_list):
         u_tier = u.get("tier", "No Tier")
@@ -740,7 +819,6 @@ def insert_by_tier(main_list: list, new_entry: dict) -> list:
     return main_list
 
 async def get_thread_message_reg(thread: discord.Thread, message_id: int):
-    """Находит запись в MongoDB по thread_id."""
     try:
         col = get_reg_collection()
         return col.find_one({"thread_id": str(thread.id)})
@@ -757,7 +835,6 @@ async def get_thread_message_reg(thread: discord.Thread, message_id: int):
 async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
-    # Только ветки
     if not isinstance(message.channel, discord.Thread):
         return
     if message.author.bot:
@@ -765,12 +842,12 @@ async def on_message(message: discord.Message):
     if "+" not in message.content:
         return
 
-    # Ищем запись по thread_id
     data = await get_thread_message_reg(message.channel, 0)
     if not data:
         return
+    if data.get("closed"):
+        return
 
-    # Сохраняем message_id → user_id маппинг для будущего удаления
     try:
         col = get_reg_collection()
         msg_map = data.get("msg_map", {})
@@ -778,6 +855,9 @@ async def on_message(message: discord.Message):
         col.update_one({"_id": data["_id"]}, {"$set": {"msg_map": msg_map}})
     except Exception as e:
         print(f"[ERROR] on_message reg: {e}")
+
+    # Лог: откинул плюс
+    await log_mp_event(data, f"{message.author.display_name} откинул плюс")
 
 
 @bot.event
@@ -795,7 +875,6 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if not reactor or not has_reg_admin_role(reactor):
         return
 
-    # Ищем в какой ветке это произошло
     channel = bot.get_channel(payload.channel_id)
     if not isinstance(channel, discord.Thread):
         return
@@ -803,8 +882,9 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     data = await get_thread_message_reg(channel, 0)
     if not data:
         return
+    if data.get("closed"):
+        return
 
-    # Получаем сообщение
     try:
         msg = await channel.fetch_message(payload.message_id)
     except Exception:
@@ -817,11 +897,8 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     main_list = data.get("main_list", [])
     max_slots = data["max_slots"]
 
-    # Уже в списке?
     if any(u["id"] == user_id for u in main_list):
         return
-
-    # Слоты заполнены?
     if len(main_list) >= max_slots:
         return
 
@@ -839,13 +916,15 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     data["main_list"] = main_list
     await save_reg_data(int(data["message_id"]), {"main_list": main_list})
 
-    # Обновляем эмбед
     try:
         reg_channel = bot.get_channel(int(data["channel_id"]))
         reg_msg = await reg_channel.fetch_message(int(data["message_id"]))
         await update_reg_embed(reg_msg, data)
     except Exception as e:
         print(f"[ERROR] update embed on reaction add: {e}")
+
+    # Лог: вписал
+    await log_mp_event(data, f"{reactor.display_name} вписал {member.display_name}")
 
 
 @bot.event
@@ -868,8 +947,9 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
     data = await get_thread_message_reg(channel, 0)
     if not data:
         return
+    if data.get("closed"):
+        return
 
-    # Находим автора сообщения
     try:
         msg = await channel.fetch_message(payload.message_id)
     except Exception:
@@ -880,7 +960,7 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
     new_list = [u for u in main_list if u["id"] != user_id]
 
     if len(new_list) == len(main_list):
-        return  # не было в списке
+        return
 
     data["main_list"] = new_list
     await save_reg_data(int(data["message_id"]), {"main_list": new_list})
@@ -892,6 +972,9 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
     except Exception as e:
         print(f"[ERROR] update embed on reaction remove: {e}")
 
+    # Лог: выписал
+    await log_mp_event(data, f"{reactor.display_name} выписал {msg.author.display_name}")
+
 
 @bot.event
 async def on_raw_message_delete(payload: discord.RawMessageDeleteEvent):
@@ -902,6 +985,8 @@ async def on_raw_message_delete(payload: discord.RawMessageDeleteEvent):
     data = await get_thread_message_reg(channel, 0)
     if not data:
         return
+    if data.get("closed"):
+        return
 
     msg_map = data.get("msg_map", {})
     user_id = msg_map.get(str(payload.message_id))
@@ -909,12 +994,9 @@ async def on_raw_message_delete(payload: discord.RawMessageDeleteEvent):
         return
 
     main_list = data.get("main_list", [])
+    was_in_list = any(u["id"] == user_id for u in main_list)
     new_list = [u for u in main_list if u["id"] != user_id]
 
-    if len(new_list) == len(main_list):
-        return
-
-    # Убираем из маппинга
     msg_map.pop(str(payload.message_id), None)
     data["main_list"] = new_list
 
@@ -926,6 +1008,19 @@ async def on_raw_message_delete(payload: discord.RawMessageDeleteEvent):
         await update_reg_embed(reg_msg, data)
     except Exception as e:
         print(f"[ERROR] update embed on message delete: {e}")
+
+    # Лог
+    guild = bot.get_guild(payload.guild_id) if payload.guild_id else None
+    nick = user_id
+    if guild:
+        member = guild.get_member(int(user_id))
+        if member:
+            nick = member.display_name
+
+    if was_in_list:
+        await log_mp_event(data, f"{nick} убрал плюс и был выписан из списка")
+    else:
+        await log_mp_event(data, f"{nick} убрал плюс")
 
 
 # ───────────────────────────────────────────────
@@ -986,7 +1081,7 @@ class VoiceChannelSelect(discord.ui.Select):
         result = "\n".join(lines)
         await interaction.followup.send(result, ephemeral=True)
 
-        # Лог в ветку — тегаем только отсутствующих
+        # Лог в ветку "плюсы" — тегаем только отсутствующих
         try:
             reg_channel = interaction.guild.get_channel(int(self.reg_data.get("channel_id", 0)))
             if reg_channel:
@@ -1001,6 +1096,14 @@ class VoiceChannelSelect(discord.ui.Select):
                     await reg_msg.thread.send(log_text)
         except Exception as e:
             print(f"[ERROR] voice check log: {e}")
+
+        # Лог в МП лог-ветку — без тегов, только ники
+        absent_nicks = ", ".join(u["nick"] for u in not_in_voice) if not_in_voice else "никого, все присутствуют"
+        mp_log_text = (
+            f"{interaction.user.display_name} провёл проверку по войсу {voice_channel.name}"
+            + chr(10) + f"Отсутствуют: {absent_nicks}"
+        )
+        await log_mp_event(self.reg_data, mp_log_text)
 
 
 class VoiceSelectView(View):
@@ -1023,11 +1126,20 @@ class ModMenuSelect(discord.ui.Select):
         self.data = data
         self.guild = guild
 
-        options = [
-            discord.SelectOption(label="📋 Сформировать список", value="form"),
-            discord.SelectOption(label="📣 Тегнуть список", value="tag"),
-            discord.SelectOption(label="🎤 Проверка по войсу", value="voice"),
-        ]
+        closed = data.get("closed", False)
+
+        if closed:
+            options = [
+                discord.SelectOption(label="ℹ️ Инфо об МП", value="info"),
+            ]
+        else:
+            options = [
+                discord.SelectOption(label="📋 Сформировать список", value="form"),
+                discord.SelectOption(label="📣 Тегнуть список", value="tag"),
+                discord.SelectOption(label="🎤 Проверка по войсу", value="voice"),
+                discord.SelectOption(label="ℹ️ Инфо об МП", value="info"),
+                discord.SelectOption(label="🔒 Закрыть МП", value="close"),
+            ]
         super().__init__(placeholder="выберите действие...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
@@ -1039,7 +1151,6 @@ class ModMenuSelect(discord.ui.Select):
                 await interaction.followup.send("ветка не найдена", ephemeral=True)
                 return
 
-            # Полная пересборка списка из ветки
             valid_users = []
             async for msg in thread.history(limit=500, oldest_first=True):
                 if msg.author.bot or "+" not in msg.content:
@@ -1090,6 +1201,88 @@ class ModMenuSelect(discord.ui.Select):
             await view.setup(interaction.guild)
             await interaction.followup.send("выберите голосовой канал для проверки:", view=view, ephemeral=True)
 
+        elif self.values[0] == "info":
+            mp_number = self.data.get("mp_number", "?")
+            creator_id = self.data.get("creator_id")
+            created_at = self.data.get("created_at")
+            thread_link = self.data.get("mp_log_thread_link", "не найдена")
+
+            lines = [f"**Мероприятие #{mp_number}**"]
+            if creator_id:
+                lines.append(f"Создал: <@{creator_id}>")
+            if created_at:
+                try:
+                    dt = discord.utils.parse_time(created_at)
+                    lines.append(f"Создано: {discord.utils.format_dt(dt, style='f')}")
+                except Exception:
+                    pass
+            lines.append(f"Ветка с логами: {thread_link}")
+
+            if self.data.get("closed"):
+                closer_id = self.data.get("closer_id")
+                closed_at = self.data.get("closed_at")
+                if closer_id:
+                    lines.append(f"Закрыл: <@{closer_id}>")
+                if closed_at:
+                    try:
+                        dt = discord.utils.parse_time(closed_at)
+                        lines.append(f"Закрыто: {discord.utils.format_dt(dt, style='f')}")
+                    except Exception:
+                        pass
+
+            await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+        elif self.values[0] == "close":
+            if self.data.get("closed"):
+                await interaction.followup.send("МП уже закрыто", ephemeral=True)
+                return
+
+            closed_at_iso = discord.utils.utcnow().isoformat()
+            self.data["closed"] = True
+            self.data["closer_id"] = str(interaction.user.id)
+            self.data["closed_at"] = closed_at_iso
+
+            await save_reg_data(int(self.reg_message.id), {
+                "closed": True,
+                "closer_id": str(interaction.user.id),
+                "closed_at": closed_at_iso
+            })
+
+            await update_reg_embed(self.reg_message, self.data)
+
+            # Закрываем ветку "плюсы"
+            try:
+                thread = self.reg_message.thread if hasattr(self.reg_message, "thread") and self.reg_message.thread else None
+                if thread:
+                    await thread.send(f"{interaction.user.mention} завершил мероприятие")
+                    await thread.edit(locked=True, archived=True)
+            except Exception as e:
+                print(f"[ERROR] close plus thread: {e}")
+
+            # Лог-ветка МП
+            await log_mp_event(self.data, f"Мероприятие закрыто {interaction.user.display_name}")
+            try:
+                mp_log_thread_id = self.data.get("mp_log_thread_id")
+                if mp_log_thread_id:
+                    log_thread = bot.get_channel(int(mp_log_thread_id))
+                    if log_thread:
+                        await log_thread.edit(locked=True, archived=True)
+            except Exception as e:
+                print(f"[ERROR] close mp log thread: {e}")
+
+            # Обновляем эмбед в канале логов МП
+            try:
+                mp_log_msg_id = self.data.get("mp_log_message_id")
+                if mp_log_msg_id:
+                    log_channel = bot.get_channel(MP_LOGS_CHANNEL_ID)
+                    if log_channel:
+                        log_msg = await log_channel.fetch_message(int(mp_log_msg_id))
+                        await log_msg.edit(embed=build_mp_log_embed(self.data, closed=True))
+            except Exception as e:
+                print(f"[ERROR] update mp log embed on close: {e}")
+
+            await interaction.followup.send(f"Мероприятие #{self.data.get('mp_number')} закрыто", ephemeral=True)
+
 
 class ModMenuView(View):
     def __init__(self, guild: discord.Guild, reg_message: discord.Message, data: dict):
@@ -1115,6 +1308,36 @@ class RegView(View):
 
         view = ModMenuView(interaction.guild, interaction.message, data)
         await interaction.followup.send("выберите действие:", view=view, ephemeral=True)
+
+
+# ───────────────────────────────────────────────
+# АВТОУДАЛЕНИЕ ЗАКРЫТЫХ МП ЧЕРЕЗ 14 ДНЕЙ
+# ───────────────────────────────────────────────
+
+async def mp_cleanup_loop():
+    import asyncio
+    from datetime import timedelta
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            col = get_reg_collection()
+            now = discord.utils.utcnow()
+            cutoff = now - timedelta(days=MP_RETENTION_DAYS)
+            closed_regs = list(col.find({"closed": True}))
+            for reg in closed_regs:
+                closed_at = reg.get("closed_at")
+                if not closed_at:
+                    continue
+                try:
+                    closed_dt = discord.utils.parse_time(closed_at)
+                except Exception:
+                    continue
+                if closed_dt < cutoff:
+                    col.delete_one({"_id": reg["_id"]})
+                    print(f"[INFO] Удалено старое МП #{reg.get('mp_number')}")
+        except Exception as e:
+            print(f"[ERROR] mp_cleanup_loop: {e}")
+        await asyncio.sleep(3600)  # раз в час проверяем
 
 
 
@@ -1557,10 +1780,17 @@ async def reg(interaction: discord.Interaction, title: str, slots: int):
 
     await interaction.response.defer(ephemeral=True)
 
+    mp_number = await get_next_mp_number()
+    created_at_iso = discord.utils.utcnow().isoformat()
+
     data = {
         "title": title,
         "max_slots": slots,
         "main_list": [],
+        "mp_number": mp_number,
+        "creator_id": str(interaction.user.id),
+        "created_at": created_at_iso,
+        "closed": False,
     }
 
     embed = build_reg_embed(data)
@@ -1569,6 +1799,26 @@ async def reg(interaction: discord.Interaction, title: str, slots: int):
 
     # Создаём ветку для плюсов
     thread = await msg.create_thread(name="плюсы")
+
+    # Создаём эмбед в канале логов МП + ветку для системных логов
+    mp_log_message_id = None
+    mp_log_thread_id = None
+    mp_log_thread_link = None
+    try:
+        log_channel = interaction.guild.get_channel(MP_LOGS_CHANNEL_ID)
+        if log_channel:
+            log_embed = build_mp_log_embed(data, closed=False)
+            log_msg = await log_channel.send(embed=log_embed)
+            mp_log_message_id = str(log_msg.id)
+            log_thread = await log_msg.create_thread(name=f"логи МП #{mp_number}")
+            mp_log_thread_id = str(log_thread.id)
+            mp_log_thread_link = log_thread.jump_url
+    except Exception as e:
+        print(f"[ERROR] mp log channel: {e}")
+
+    data["mp_log_message_id"] = mp_log_message_id
+    data["mp_log_thread_id"] = mp_log_thread_id
+    data["mp_log_thread_link"] = mp_log_thread_link
 
     # Сохраняем в БД
     try:
@@ -1582,7 +1832,7 @@ async def reg(interaction: discord.Interaction, title: str, slots: int):
     except Exception as e:
         print(f"[ERROR] MongoDB reg: {e}")
 
-    await interaction.followup.send("список создан", ephemeral=True)
+    await interaction.followup.send(f"мероприятие #{mp_number} создано", ephemeral=True)
 
 
 @bot.tree.command(name="sync", description="Синхронизировать команды")
@@ -1615,7 +1865,7 @@ async def on_ready():
     bot.add_view(TicketPanelView())
     bot.add_view(TicketActionsView())
     bot.add_view(RegView())
-    bot.loop.create_task(reg_sync_loop())
+    bot.loop.create_task(mp_cleanup_loop())
     bot.add_view(VacationPanelView())
     bot.add_view(VacationApproveView())
     print(f"Бот запущен: {bot.user}")
