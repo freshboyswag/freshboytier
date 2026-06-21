@@ -722,7 +722,7 @@ def build_reg_embed(data: dict) -> discord.Embed:
     description = f"Основной список {len(main_list)}/{max_slots}"
     body = "\n".join(lines) if lines else "пусто"
 
-    embed = discord.Embed(title=f"#{mp_number} {title}", description=description, color=0x1ABC9C)
+    embed = discord.Embed(title=f"{title}", description=description, color=0x1ABC9C)
     embed.add_field(name="\u200b", value=body, inline=False)
     return embed
 
