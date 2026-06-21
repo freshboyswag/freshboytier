@@ -1120,7 +1120,7 @@ class VoiceChannelSelect(discord.ui.Select):
 
         absent_nicks = ", ".join(u["nick"] for u in not_in_voice)
         if absent_nicks:
-            await log_mp_event(self.reg_data, f"Отсутствую и тегнуты в канал: {absent_nicks}")
+            await log_mp_event(self.reg_data, f"Отсутствуют и тегнуты в канал: {absent_nicks}")
 
 
 class VoiceSelectView(View):
