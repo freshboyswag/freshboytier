@@ -722,7 +722,7 @@ def build_reg_embed(data: dict) -> discord.Embed:
     description = f"Основной список {len(main_list)}/{max_slots}"
     body = "\n".join(lines) if lines else "пусто"
 
-    embed = discord.Embed(title=f"{title}", description=description, color=0x1ABC9C)
+    embed = discord.Embed(title=f"#{mp_number} {title}", description=description, color=0x1ABC9C)
     embed.add_field(name="\u200b", value=body, inline=False)
     return embed
 
@@ -1120,7 +1120,7 @@ class VoiceChannelSelect(discord.ui.Select):
 
         absent_nicks = ", ".join(u["nick"] for u in not_in_voice)
         if absent_nicks:
-            await log_mp_event(self.reg_data, f"Отсутствуют и тегнуты в канал: {absent_nicks}")
+            await log_mp_event(self.reg_data, f"Отсутствую и тегнуты в канал: {absent_nicks}")
 
 
 class VoiceSelectView(View):
@@ -1629,10 +1629,121 @@ def build_vacation_panel_embed() -> discord.Embed:
 
 
 # ═══════════════════════════════════════════════
-# ЛОГИ ВХОДА/ВЫХОДА С СЕРВЕРА
+# СИСТЕМА ПРОФИЛЕЙ (gtahltv.com парсинг — тестовая версия)
 # ═══════════════════════════════════════════════
 
-MEMBER_LOG_CHANNEL_ID = 1515644806406340708
+import urllib.request
+import urllib.parse
+
+def get_profiles_collection():
+    return get_db()["profiles"]
+
+def normalize_name(raw: str) -> str:
+    """Нормализует ввод вида 'имя_фамилия', 'имя фамилия', 'Имя Фамилия' в 'Имя Фамилия'."""
+    cleaned = raw.strip().replace("_", " ").replace("-", " ")
+    parts = [p for p in cleaned.split() if p]
+    parts = [p.capitalize() for p in parts]
+    return " ".join(parts)
+
+
+def fetch_gtahltv_search(name: str, static: str) -> str:
+    """Тестовая функция — пытается достучаться до gtahltv.com и возвращает текст ошибки или сырой ответ."""
+    query = urllib.parse.urlencode({"search": name, "server": "RU16", "page": 1})
+    url = f"https://gtahltv.com/players?{query}"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "ru-RU,ru;q=0.9",
+    }
+
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            status = resp.status
+            body = resp.read().decode("utf-8", errors="replace")
+            return f"УСПЕХ\nURL: {url}\nСтатус: {status}\nДлина ответа: {len(body)} символов\nПервые 500 символов:\n{body[:500]}"
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        return f"HTTP ОШИБКА\nURL: {url}\nКод: {e.code}\nПричина: {e.reason}\nТело ответа (первые 500 симв):\n{body[:500]}"
+    except Exception as e:
+        return f"ОШИБКА ЗАПРОСА\nURL: {url}\nТип: {type(e).__name__}\nТекст: {str(e)}"
+
+
+class ProfileModal(Modal, title="Привязка игровых данных"):
+    full_name = TextInput(
+        label="Имя Фамилия",
+        placeholder="например: Vamp Creator",
+        style=discord.TextStyle.short,
+        min_length=1,
+        max_length=100
+    )
+    static = TextInput(
+        label="Статик",
+        placeholder="например: 162157",
+        style=discord.TextStyle.short,
+        min_length=1,
+        max_length=20
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        normalized_name = normalize_name(self.full_name.value)
+        static_value = self.static.value.strip()
+
+        try:
+            col = get_profiles_collection()
+            col.update_one(
+                {"user_id": str(interaction.user.id)},
+                {"$set": {
+                    "user_id": str(interaction.user.id),
+                    "full_name": normalized_name,
+                    "static": static_value,
+                }},
+                upsert=True
+            )
+        except Exception as e:
+            await interaction.followup.send(f"ошибка базы данных: {e}", ephemeral=True)
+            return
+
+        # ТЕСТ: пробуем спарсить данные и показываем результат прямо в чат
+        test_result = fetch_gtahltv_search(normalized_name, static_value)
+
+        await interaction.followup.send(
+            f"данные привязаны: **{normalized_name}** / статик **{static_value}**\n\n"
+            f"```\n{test_result[:1800]}\n```",
+            ephemeral=True
+        )
+
+
+@bot.tree.command(name="profile", description="Показать игровой профиль")
+async def profile(interaction: discord.Interaction, user: discord.Member = None):
+    target = user or interaction.user
+
+    try:
+        col = get_profiles_collection()
+        doc = col.find_one({"user_id": str(target.id)})
+    except Exception as e:
+        await interaction.response.send_message(f"ошибка базы данных: {e}", ephemeral=True)
+        return
+
+    if not doc:
+        if target.id == interaction.user.id:
+            await interaction.response.send_modal(ProfileModal())
+        else:
+            await interaction.response.send_message("У упомянутого участника еще не привязаны игровые данные", ephemeral=True)
+        return
+
+    # Если данные уже есть — тестово пробуем спарсить и показать результат
+    await interaction.response.defer(ephemeral=True)
+    test_result = fetch_gtahltv_search(doc["full_name"], doc["static"])
+    await interaction.followup.send(
+        f"**{doc['full_name']}** / статик **{doc['static']}**\n\n"
+        f"```\n{test_result[:1800]}\n```",
+        ephemeral=True
+    )
+
 
 @bot.event
 async def on_member_join(member: discord.Member):
