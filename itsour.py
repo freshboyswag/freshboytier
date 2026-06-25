@@ -1827,7 +1827,7 @@ def format_fullname(raw: str) -> str:
         return "-"
     return raw.replace("_", " ").title()
 
-def build_database_embed(guild: discord.Guild) -> discord.Embed:
+def build_database_embed() -> discord.Embed:
     embed = discord.Embed(title="База данных участников", color=0x1ABC9C)
     embed.description = "Используй кнопки ниже для управления базой данных"
     embed.timestamp = discord.utils.utcnow()
