@@ -109,7 +109,7 @@ class ChannelsCog(commands.Cog):
             await interaction.response.send_message("нет прав", ephemeral=True)
             return
 
-        allowed = ["tickets", "otpusk", "private", "all"]
+        allowed = ["tickets", "otpusk", "private", "database", "all"]
         if panel not in allowed:
             await interaction.response.send_message(
                 f"неизвестная панель. доступные: {', '.join(allowed)}", ephemeral=True
@@ -122,6 +122,7 @@ class ChannelsCog(commands.Cog):
         # Импортируем нужные вещи из других когов
         from cogs.tickets import TicketPanelView, build_ticket_panel_embed, TICKETS_CHANNEL_ID
         from cogs.vacation import VacationPanelView, build_vacation_panel_embed, VACATION_CHANNEL_ID
+        from cogs.members import DatabasePanelView, build_database_embed, DATABASE_CHANNEL_ID
 
         async def send_panel(channel_id, embed_fn, view_fn):
             ch = interaction.guild.get_channel(channel_id)
@@ -147,6 +148,11 @@ class ChannelsCog(commands.Cog):
             ok = await send_panel(VACATION_CHANNEL_ID, build_vacation_panel_embed, VacationPanelView)
             if ok:
                 sent.append("otpusk")
+
+        if panel in ("database", "all"):
+            ok = await send_panel(DATABASE_CHANNEL_ID, build_database_embed, DatabasePanelView)
+            if ok:
+                sent.append("database")
 
         await interaction.followup.send(
             f"отправлено: {', '.join(sent) if sent else 'ничего'}", ephemeral=True
