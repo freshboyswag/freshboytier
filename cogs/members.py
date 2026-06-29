@@ -342,18 +342,20 @@ class MemberDeleteConfirmView(View):
     @discord.ui.button(label="✅ Да, удалить", style=discord.ButtonStyle.red, custom_id="member_delete_confirm")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         uid = self.doc.get("uid", "?")
+        await interaction.response.defer(ephemeral=True)
         try:
             get_members_game_col().delete_one({"uid": self.doc["uid"]})
             get_members_server_col().delete_one({"discord_id": self.discord_id})
         except Exception as e:
             print(f"[ERROR] delete member: {e}")
-            await interaction.response.edit_message(content="❌ ошибка при удалении", view=None)
+            await interaction.followup.send("❌ ошибка при удалении", ephemeral=True)
             return
-        await interaction.response.edit_message(content=f"✅ Запись uid #{uid} удалена", view=None)
+        await interaction.followup.send(f"✅ Запись uid #{uid} удалена", ephemeral=True)
 
     @discord.ui.button(label="Отмена", style=discord.ButtonStyle.grey, custom_id="member_delete_cancel")
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content="отменено", view=None)
+        await interaction.response.defer(ephemeral=True)
+        await interaction.followup.send("отменено", ephemeral=True)
 
 
 class MemberEditView(View):
