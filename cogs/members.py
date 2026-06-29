@@ -135,7 +135,7 @@ class PerPageModal(Modal, title="Записей на странице"):
 
 
 class MembersListView(View):
-    def __init__(self, records: list, page: int = 0, per_page: int = 20):
+    def __init__(self, records: list, page: int = 0, per_page: int = 35):
         super().__init__(timeout=None)
         self.records = records
         self.page = page
@@ -201,7 +201,7 @@ class MembersListView(View):
         self._update_buttons()
         await interaction.response.edit_message(embed=self.get_page_embed(), view=self)
 
-    @discord.ui.button(label="20/стр", style=discord.ButtonStyle.blurple, custom_id="ml_per_page")
+    @discord.ui.button(label="35/стр", style=discord.ButtonStyle.blurple, custom_id="ml_per_page")
     async def change_per_page(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(PerPageModal(list_view=self))
 
@@ -339,7 +339,7 @@ class MemberDeleteConfirmView(View):
         self.doc = doc
         self.discord_id = discord_id
 
-    @discord.ui.button(label="✅ Да, удалить", style=discord.ButtonStyle.red)
+    @discord.ui.button(label="✅ Да, удалить", style=discord.ButtonStyle.red, custom_id="member_delete_confirm")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         uid = self.doc.get("uid", "?")
         try:
@@ -351,7 +351,7 @@ class MemberDeleteConfirmView(View):
             return
         await interaction.response.edit_message(content=f"✅ Запись uid #{uid} удалена", view=None)
 
-    @discord.ui.button(label="Отмена", style=discord.ButtonStyle.grey)
+    @discord.ui.button(label="Отмена", style=discord.ButtonStyle.grey, custom_id="member_delete_cancel")
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(content="отменено", view=None)
 
