@@ -135,7 +135,7 @@ class PerPageModal(Modal, title="Записей на странице"):
 
 
 class MembersListView(View):
-    def __init__(self, records: list, page: int = 0, per_page: int = 50):
+    def __init__(self, records: list, page: int = 0, per_page: int = 20):
         super().__init__(timeout=None)
         self.records = records
         self.page = page
@@ -175,9 +175,14 @@ class MembersListView(View):
                 line += f" | **{note}**"
             lines.append(line)
 
+        description = "\n".join(lines) if lines else "пусто"
+        # Discord ограничение — 4096 символов в description
+        if len(description) > 4000:
+            description = description[:4000] + "\n... (обрезано)"
+
         embed = discord.Embed(
             title="Учёт участников",
-            description="\n".join(lines) if lines else "пусто",
+            description=description,
             color=0x1ABC9C
         )
         embed.set_footer(text=f"Страница {self.page + 1}/{total_pages} | {end - start} из {total}")
@@ -196,7 +201,7 @@ class MembersListView(View):
         self._update_buttons()
         await interaction.response.edit_message(embed=self.get_page_embed(), view=self)
 
-    @discord.ui.button(label="50/стр", style=discord.ButtonStyle.blurple, custom_id="ml_per_page")
+    @discord.ui.button(label="20/стр", style=discord.ButtonStyle.blurple, custom_id="ml_per_page")
     async def change_per_page(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(PerPageModal(list_view=self))
 
