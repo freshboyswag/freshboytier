@@ -136,7 +136,7 @@ class PerPageModal(Modal, title="Записей на странице"):
 
 class MembersListView(View):
     def __init__(self, records: list, page: int = 0, per_page: int = 50):
-        super().__init__(timeout=120)
+        super().__init__(timeout=None)
         self.records = records
         self.page = page
         self.per_page = per_page
@@ -167,7 +167,13 @@ class MembersListView(View):
             dsid = r.get("discord_id", "-")
             full_name = format_fullname(r.get("full_name", "-"))
             static = r.get("static", "-")
-            lines.append(f"`#{uid}` @{username} ({dsid}) — {full_name} | {static}")
+            note = r.get("note", "-")
+
+            mention = f"<@{dsid}>" if dsid and dsid != "-" else "-"
+            line = f"`#{uid}` | {mention} (`{username}`) | {dsid} | {full_name} | {static}"
+            if note and note != "-":
+                line += f" | **{note}**"
+            lines.append(line)
 
         embed = discord.Embed(
             title="Учёт участников",
@@ -322,6 +328,29 @@ class MemberEditAllModal(Modal, title="Изменить все данные"):
         await interaction.followup.send("✅ Все данные обновлены", ephemeral=True)
 
 
+class MemberDeleteConfirmView(View):
+    def __init__(self, doc: dict, discord_id: str):
+        super().__init__(timeout=30)
+        self.doc = doc
+        self.discord_id = discord_id
+
+    @discord.ui.button(label="✅ Да, удалить", style=discord.ButtonStyle.red)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        uid = self.doc.get("uid", "?")
+        try:
+            get_members_game_col().delete_one({"uid": self.doc["uid"]})
+            get_members_server_col().delete_one({"discord_id": self.discord_id})
+        except Exception as e:
+            print(f"[ERROR] delete member: {e}")
+            await interaction.response.edit_message(content="❌ ошибка при удалении", view=None)
+            return
+        await interaction.response.edit_message(content=f"✅ Запись uid #{uid} удалена", view=None)
+
+    @discord.ui.button(label="Отмена", style=discord.ButtonStyle.grey)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="отменено", view=None)
+
+
 class MemberEditView(View):
     def __init__(self, doc: dict, discord_id: str):
         super().__init__(timeout=120)
@@ -363,33 +392,10 @@ class MemberEditView(View):
             return
 
         uid = self.doc.get("uid", "?")
-        discord_id = self.discord_id
-
-        # Подтверждение через ephemeral с кнопками
-        confirm_view = View(timeout=30)
-
-        @discord.ui.button(label="✅ Да, удалить", style=discord.ButtonStyle.red)
-        async def confirm(confirm_interaction: discord.Interaction, btn: discord.ui.Button):
-            try:
-                get_members_game_col().delete_one({"uid": self.doc["uid"]})
-                get_members_server_col().delete_one({"discord_id": discord_id})
-            except Exception as e:
-                print(f"[ERROR] delete member: {e}")
-                await confirm_interaction.response.edit_message(content="❌ ошибка при удалении", view=None)
-                return
-            await confirm_interaction.response.edit_message(
-                content=f"✅ Запись uid #{uid} удалена", view=None
-            )
-
-        @discord.ui.button(label="Отмена", style=discord.ButtonStyle.grey)
-        async def cancel(cancel_interaction: discord.Interaction, btn: discord.ui.Button):
-            await cancel_interaction.response.edit_message(content="отменено", view=None)
-
-        confirm_view.add_item(confirm)
-        confirm_view.add_item(cancel)
-
+        username = self.doc.get("discord_username", "?")
+        confirm_view = MemberDeleteConfirmView(doc=self.doc, discord_id=self.discord_id)
         await interaction.response.send_message(
-            f"Удалить запись **uid #{uid}** (@{self.doc.get('discord_username', '?')})? Это действие необратимо.",
+            f"Удалить запись **uid #{uid}** (@{username})? Это действие необратимо.",
             view=confirm_view,
             ephemeral=True
         )
