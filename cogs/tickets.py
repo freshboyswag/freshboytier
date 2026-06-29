@@ -192,67 +192,27 @@ class TicketActionsView(View):
             await interaction.response.send_message("нет прав", ephemeral=True)
             return
 
-        await interaction.response.defer()
-
-        guild = interaction.guild
         ticket_data = await self.get_ticket_data(str(interaction.channel.id))
         if not ticket_data:
-            await interaction.followup.send("данные тикета не найдены", ephemeral=True)
+            await interaction.response.send_message("данные тикета не найдены", ephemeral=True)
             return
 
-        applicant = guild.get_member(int(ticket_data["applicant_id"]))
-        results_channel = guild.get_channel(RESULTS_CHANNEL_ID)
-        logs_channel = guild.get_channel(LOGS_ACCEPTED_ID)
-
-        results_msg_id = ticket_data.get("results_msg_id")
-        if results_msg_id and results_channel:
+        applicant = interaction.guild.get_member(int(ticket_data["applicant_id"]))
+        if not applicant:
             try:
-                msg = await results_channel.fetch_message(int(results_msg_id))
-                await msg.delete()
+                applicant = await interaction.guild.fetch_member(int(ticket_data["applicant_id"]))
             except Exception:
-                pass
+                await interaction.response.send_message("пользователь не найден на сервере", ephemeral=True)
+                return
 
-        if applicant:
-            accept_role = guild.get_role(ACCEPT_ROLE_ID)
-            if accept_role:
-                try:
-                    await applicant.add_roles(accept_role)
-                except Exception as e:
-                    print(f"[ERROR] Не удалось выдать роль: {e}")
-
-        embed = discord.Embed(color=0x2ecc71)
-        embed.description = (
-            f"Заявка пользователя {applicant.mention if applicant else ticket_data['applicant_name']}\n\n"
-            f"На вступление в семью была принята! 🎉\n"
-            f"Рассматривал заявку: {interaction.user.mention}"
-        )
-        if results_channel:
-            await results_channel.send(embed=embed)
-
-        if logs_channel:
-            log_embed = discord.Embed(title="Заявка принята", color=0x2ecc71)
-            log_embed.add_field(
-                name="Пользователь",
-                value=f"{applicant.mention if applicant else ticket_data['applicant_name']} (`{ticket_data['applicant_name']}`)",
-                inline=False
+        from cogs.members import AcceptGameDataModal
+        await interaction.response.send_modal(
+            AcceptGameDataModal(
+                ticket_data=ticket_data,
+                applicant=applicant,
+                ticket_channel=interaction.channel
             )
-            fields = ticket_data.get("fields", {})
-            log_embed.add_field(name="ник / статик / имя / возраст", value=fields.get("nick", "-"), inline=False)
-            log_embed.add_field(name="средний онлайн / прайм-тайм", value=fields.get("online", "-"), inline=False)
-            log_embed.add_field(name="история семей", value=fields.get("history", "-"), inline=False)
-            log_embed.add_field(name="откуда узнали о семье", value=fields.get("source", "-"), inline=False)
-            log_embed.add_field(name="откаты", value=fields.get("clips", "-"), inline=False)
-            log_embed.add_field(name="Принял", value=interaction.user.mention, inline=False)
-            log_embed.timestamp = discord.utils.utcnow()
-            await logs_channel.send(embed=log_embed)
-
-        try:
-            col = get_tickets_collection()
-            col.delete_one({"channel_id": str(interaction.channel.id)})
-        except Exception as e:
-            print(f"[ERROR] MongoDB: {e}")
-
-        await interaction.channel.delete()
+        )
 
     @discord.ui.button(label="Взять на рассмотрение", style=discord.ButtonStyle.green, custom_id="ticket_review")
     async def review(self, interaction: discord.Interaction, button: discord.ui.Button):
