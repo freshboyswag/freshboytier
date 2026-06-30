@@ -4,6 +4,9 @@ from discord.ext import commands
 from config import MEMBER_LOG_CHANNEL_ID
 from database import get_db, is_log_enabled
 
+LEAVE_ROLES_LOG_CHANNEL_ID = 1517307690173599834
+LEAVE_CHECK_ROLE_IDS = {1510604916207390740, 1510603939664629891, 1510600886563504148}
+
 
 class MemberLogsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -43,6 +46,25 @@ class MemberLogsCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
+        # Тихий лог с ролями — работает независимо от is_log_enabled("joins")
+        member_role_ids = {r.id for r in member.roles}
+        matched_role_ids = member_role_ids & LEAVE_CHECK_ROLE_IDS
+        if matched_role_ids:
+            leave_log_channel = member.guild.get_channel(LEAVE_ROLES_LOG_CHANNEL_ID)
+            if leave_log_channel:
+                matched_roles = [member.guild.get_role(rid) for rid in matched_role_ids]
+                matched_names = ", ".join(r.name for r in matched_roles if r)
+                embed = discord.Embed(color=0xff4444)
+                embed.description = (
+                    f"⚠️ {member.mention} (`{member.name}`, `{member.id}`) вышел с сервера, "
+                    f"имея роли: **{matched_names}**"
+                )
+                embed.timestamp = discord.utils.utcnow()
+                try:
+                    await leave_log_channel.send(embed=embed)
+                except Exception as e:
+                    print(f"[ERROR] leave roles log: {e}")
+
         if not is_log_enabled("joins"):
             return
 
