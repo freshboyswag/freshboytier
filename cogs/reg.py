@@ -27,16 +27,16 @@ def get_tier_label(member: discord.Member) -> str:
             return label
         if role_id in member_role_ids:
             return label
-    return "No Tier"
+    return "no tier"
 
 def insert_by_tier(main_list: list, new_entry: dict) -> list:
     tier_order_labels = [label for label, _ in TIER_ORDER]
-    new_tier = new_entry.get("tier", "No Tier")
+    new_tier = new_entry.get("tier", "no tier")
     new_tier_idx = tier_order_labels.index(new_tier) if new_tier in tier_order_labels else len(tier_order_labels)
 
     insert_pos = len(main_list)
     for i, u in enumerate(main_list):
-        u_tier = u.get("tier", "No Tier")
+        u_tier = u.get("tier", "no tier")
         u_tier_idx = tier_order_labels.index(u_tier) if u_tier in tier_order_labels else len(tier_order_labels)
         if u_tier_idx > new_tier_idx:
             insert_pos = i
@@ -65,9 +65,9 @@ def build_reg_embed(data: dict) -> discord.Embed:
 
     tier_groups = {label: [] for label, _ in TIER_ORDER}
     for entry in main_list:
-        tier = entry.get("tier", "No Tier")
+        tier = entry.get("tier", "no tier")
         if tier not in tier_groups:
-            tier = "No Tier"
+            tier = "no tier"
         tier_groups[tier].append(entry)
 
     lines = []
