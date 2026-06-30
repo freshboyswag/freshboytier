@@ -26,6 +26,7 @@ async def load_cogs():
         "cogs.vacation",
         "cogs.member_logs",
         "cogs.members",
+        "cogs.profile",
     ]
     for cog in cogs:
         try:
