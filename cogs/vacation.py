@@ -153,13 +153,13 @@ class VacationApproveView(View):
             try:
                 applicant = await guild.fetch_member(applicant_id)
             except Exception:
-                await interaction.followup.send("участник не найден на сервере", ephemeral=True)
-                return
+                applicant = None  # участник вышел с сервера — всё равно позволяем отклонить
 
-        try:
-            await applicant.send("ваша заявка на отпуск отклонена")
-        except discord.Forbidden:
-            pass
+        if applicant:
+            try:
+                await applicant.send("ваша заявка на отпуск отклонена")
+            except discord.Forbidden:
+                pass
 
         old_embed = interaction.message.embeds[0]
         new_embed = discord.Embed(title=old_embed.title, color=0xff4444)
