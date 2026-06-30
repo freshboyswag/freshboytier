@@ -119,9 +119,11 @@ class RejectModal(Modal, title="Причина отклонения"):
         min_length=1, max_length=300
     )
 
-    def __init__(self, applicant: discord.Member, ticket_channel: discord.TextChannel, ticket_data: dict):
+    def __init__(self, applicant, applicant_id: str, applicant_name: str, ticket_channel: discord.TextChannel, ticket_data: dict):
         super().__init__()
         self.applicant = applicant
+        self.applicant_id = applicant_id
+        self.applicant_name = applicant_name
         self.ticket_channel = ticket_channel
         self.ticket_data = ticket_data
 
@@ -140,9 +142,11 @@ class RejectModal(Modal, title="Причина отклонения"):
             except Exception:
                 pass
 
+        applicant_mention = self.applicant.mention if self.applicant else f"`{self.applicant_name}` (вышел с сервера)"
+
         embed = discord.Embed(color=0xff4444)
         embed.description = (
-            f"Заявка пользователя {self.applicant.mention}\n\n"
+            f"Заявка пользователя {applicant_mention}\n\n"
             f"На вступление в семью была отклонена!\n"
             f"Причина: {self.reason.value}\n"
             f"Рассматривал заявку: {interaction.user.mention}"
@@ -152,7 +156,7 @@ class RejectModal(Modal, title="Причина отклонения"):
 
         if logs_channel:
             log_embed = discord.Embed(title="Заявка отклонена", color=0xff4444)
-            log_embed.add_field(name="Пользователь", value=f"{self.applicant.mention} (`{self.applicant.name}`)", inline=False)
+            log_embed.add_field(name="Пользователь", value=f"{applicant_mention} (`{self.applicant_name}`)", inline=False)
             fields = self.ticket_data.get("fields", {})
             log_embed.add_field(name="ник / статик / имя / возраст", value=fields.get("nick", "-"), inline=False)
             log_embed.add_field(name="средний онлайн / прайм-тайм", value=fields.get("online", "-"), inline=False)
@@ -282,12 +286,16 @@ class TicketActionsView(View):
 
         applicant = guild.get_member(int(ticket_data["applicant_id"]))
         if not applicant:
-            await interaction.response.send_message("пользователь не найден", ephemeral=True)
-            return
+            try:
+                applicant = await guild.fetch_member(int(ticket_data["applicant_id"]))
+            except Exception:
+                applicant = None  # участник вышел с сервера — всё равно позволяем отклонить
 
         await interaction.response.send_modal(
             RejectModal(
                 applicant=applicant,
+                applicant_id=ticket_data["applicant_id"],
+                applicant_name=ticket_data.get("applicant_name", "?"),
                 ticket_channel=interaction.channel,
                 ticket_data=ticket_data
             )
