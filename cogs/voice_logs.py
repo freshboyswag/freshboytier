@@ -36,13 +36,14 @@ class VoiceLogsCog(commands.Cog):
             await log_channel.send(embed=embed)
             return
 
-        # Переход между каналами — проверяем был ли мув через аудит лог
+        # Переход между каналами — проверяем был ли мув именно этого участника через аудит лог
         if before.channel is not None and after.channel is not None and before.channel != after.channel:
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
             try:
-                async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_move):
-                    if (discord.utils.utcnow() - entry.created_at).total_seconds() < 3:
-                        return  # Был мув — on_audit_log_entry_create уже залогировал
+                async for entry in guild.audit_logs(limit=10, action=discord.AuditLogAction.member_move):
+                    if entry.target and entry.target.id == member.id:
+                        if (discord.utils.utcnow() - entry.created_at).total_seconds() < 5:
+                            return  # Был мув именно этого участника — уже залогировано в on_audit_log_entry_create
             except Exception:
                 pass
             # Сам перешёл
