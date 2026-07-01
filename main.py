@@ -40,9 +40,14 @@ async def load_cogs():
 # События
 # ───────────────────────────────────────────────
 
+cogs_loaded = False
+
 @bot.event
 async def on_ready():
-    await load_cogs()
+    global cogs_loaded
+    if not cogs_loaded:
+        await load_cogs()
+        cogs_loaded = True
     print(f"Бот запущен: {bot.user}")
 
 
