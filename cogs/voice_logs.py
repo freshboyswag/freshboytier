@@ -17,25 +17,30 @@ class VoiceLogsCog(commands.Cog):
     # ───────────────────────────────────────────────
 
     async def _find_recent_disconnect_actor(self, guild: discord.Guild):
-        await asyncio.sleep(1.5)
-        try:
-            async for entry in guild.audit_logs(limit=3, action=discord.AuditLogAction.member_disconnect):
-                if (discord.utils.utcnow() - entry.created_at).total_seconds() < 5:
-                    return entry.user
-        except Exception:
-            pass
+        # Несколько попыток с интервалом — audit log Discord иногда появляется с задержкой
+        for attempt in range(4):
+            await asyncio.sleep(1.5 if attempt == 0 else 2)
+            try:
+                async for entry in guild.audit_logs(limit=3, action=discord.AuditLogAction.member_disconnect):
+                    if (discord.utils.utcnow() - entry.created_at).total_seconds() < 12:
+                        return entry.user
+            except Exception as e:
+                print(f"[ERROR] audit log disconnect lookup (попытка {attempt + 1}): {e}")
+                return None
         return None
 
     async def _find_recent_move_actor(self, guild: discord.Guild, target_channel_id: int):
-        await asyncio.sleep(1.5)
-        try:
-            async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_move):
-                if (discord.utils.utcnow() - entry.created_at).total_seconds() < 5:
-                    channel = getattr(entry.extra, "channel", None)
-                    if channel and channel.id == target_channel_id:
-                        return entry.user
-        except Exception:
-            pass
+        for attempt in range(4):
+            await asyncio.sleep(1.5 if attempt == 0 else 2)
+            try:
+                async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_move):
+                    if (discord.utils.utcnow() - entry.created_at).total_seconds() < 12:
+                        channel = getattr(entry.extra, "channel", None)
+                        if channel and channel.id == target_channel_id:
+                            return entry.user
+            except Exception as e:
+                print(f"[ERROR] audit log move lookup (попытка {attempt + 1}): {e}")
+                return None
         return None
 
     # ───────────────────────────────────────────────
