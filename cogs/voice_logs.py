@@ -1,3 +1,4 @@
+import time
 import asyncio
 import discord
 from discord.ext import commands
@@ -9,6 +10,18 @@ from database import is_log_enabled
 class VoiceLogsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # Защита от дублей: (member_id, before_id, after_id) -> timestamp последней обработки
+        self._recent_events = {}
+
+    def _is_duplicate(self, member_id: int, before_id, after_id) -> bool:
+        """Если точно такой же переход обрабатывался < 4 сек назад — считаем дублем."""
+        key = (member_id, before_id, after_id)
+        now = time.monotonic()
+        last = self._recent_events.get(key)
+        self._recent_events[key] = now
+        # чистим старые записи чтобы не копить память
+        self._recent_events = {k: v for k, v in self._recent_events.items() if now - v < 15}
+        return last is not None and (now - last) < 4
 
     # ───────────────────────────────────────────────
     # Хелперы поиска исполнителя (Discord API не даёт
@@ -17,30 +30,29 @@ class VoiceLogsCog(commands.Cog):
     # ───────────────────────────────────────────────
 
     async def _find_recent_disconnect_actor(self, guild: discord.Guild):
-        # Несколько попыток с интервалом — audit log Discord иногда появляется с задержкой
         for attempt in range(4):
             await asyncio.sleep(1.5 if attempt == 0 else 2)
             try:
-                async for entry in guild.audit_logs(limit=3, action=discord.AuditLogAction.member_disconnect):
-                    if (discord.utils.utcnow() - entry.created_at).total_seconds() < 12:
+                async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_disconnect):
+                    if (discord.utils.utcnow() - entry.created_at).total_seconds() < 15:
                         return entry.user
             except Exception as e:
                 print(f"[ERROR] audit log disconnect lookup (попытка {attempt + 1}): {e}")
-                return None
+                continue
         return None
 
     async def _find_recent_move_actor(self, guild: discord.Guild, target_channel_id: int):
         for attempt in range(4):
             await asyncio.sleep(1.5 if attempt == 0 else 2)
             try:
-                async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_move):
-                    if (discord.utils.utcnow() - entry.created_at).total_seconds() < 12:
+                async for entry in guild.audit_logs(limit=8, action=discord.AuditLogAction.member_move):
+                    if (discord.utils.utcnow() - entry.created_at).total_seconds() < 15:
                         channel = getattr(entry.extra, "channel", None)
                         if channel and channel.id == target_channel_id:
                             return entry.user
             except Exception as e:
                 print(f"[ERROR] audit log move lookup (попытка {attempt + 1}): {e}")
-                return None
+                continue
         return None
 
     # ───────────────────────────────────────────────
@@ -50,6 +62,15 @@ class VoiceLogsCog(commands.Cog):
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         if not is_log_enabled("voice"):
+            return
+
+        before_id = before.channel.id if before.channel else None
+        after_id = after.channel.id if after.channel else None
+
+        if before_id == after_id:
+            return  # ничего не изменилось по каналу (например только мут/деф без смены канала)
+
+        if self._is_duplicate(member.id, before_id, after_id):
             return
 
         guild = member.guild
