@@ -1,0 +1,19 @@
+.env
+ 
+# Виртуальное окружение
+venv/
+env/
+.venv/
+ 
+# Python кэш
+__pycache__/
+*.pyc
+*.pyo
+ 
+# IDE
+.vscode/
+.idea/
+ 
+# ОС-мусор
+.DS_Store
+Thumbs.db
