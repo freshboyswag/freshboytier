@@ -634,8 +634,8 @@ class AcceptGameDataModal(Modal, title="Игровые данные участн
             except Exception as e:
                 print(f"[ERROR] MongoDB ticket delete: {e}")
 
-            await ticket_channel.delete()
             await select_interaction.followup.send("✅ готово", ephemeral=True)
+            await ticket_channel.delete()
 
         select.callback = select_callback
         view = View(timeout=120)
