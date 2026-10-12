@@ -45,6 +45,15 @@ def insert_by_tier(main_list: list, new_entry: dict) -> list:
     main_list.insert(insert_pos, new_entry)
     return main_list
 
+def get_plus_target(message: discord.Message):
+    """
+    Возвращает того, за кого засчитывается плюс по этому сообщению:
+    если в сообщении есть тег другого человека — это он (чужой плюс),
+    иначе — сам автор сообщения.
+    """
+    human_mentions = [u for u in message.mentions if not u.bot]
+    return human_mentions[0] if human_mentions else message.author
+
 
 # ───────────────────────────────────────────────
 # Эмбеды
@@ -530,22 +539,25 @@ class RegCog(commands.Cog):
             return
         if message.author.bot:
             return
-        if "+" not in message.content:
-            return
 
         data = await get_reg_data_by_thread(message.channel.id)
         if not data or data.get("closed"):
             return
 
+        target = get_plus_target(message)
+
         try:
             col = get_reg_collection()
             msg_map = data.get("msg_map", {})
-            msg_map[str(message.id)] = str(message.author.id)
+            msg_map[str(message.id)] = str(target.id)
             col.update_one({"_id": data["_id"]}, {"$set": {"msg_map": msg_map}})
         except Exception as e:
             print(f"[ERROR] on_message reg: {e}")
 
-        await log_mp_event(self.bot, data, f"{message.author.display_name} откинул плюс")
+        if target.id != message.author.id:
+            await log_mp_event(self.bot, data, f"{message.author.display_name} откинул плюс за {target.display_name}")
+        else:
+            await log_mp_event(self.bot, data, f"{message.author.display_name} откинул плюс")
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
@@ -575,10 +587,11 @@ class RegCog(commands.Cog):
         except Exception:
             return
 
-        if msg.author.bot or "+" not in msg.content:
+        if msg.author.bot:
             return
 
-        user_id = str(msg.author.id)
+        target = get_plus_target(msg)
+        user_id = str(target.id)
         main_list = data.get("main_list", [])
         max_slots = data["max_slots"]
 
@@ -636,7 +649,8 @@ class RegCog(commands.Cog):
         except Exception:
             return
 
-        user_id = str(msg.author.id)
+        target = get_plus_target(msg)
+        user_id = str(target.id)
         main_list = data.get("main_list", [])
         new_list = [u for u in main_list if u["id"] != user_id]
 
@@ -653,7 +667,7 @@ class RegCog(commands.Cog):
         except Exception as e:
             print(f"[ERROR] update embed on reaction remove: {e}")
 
-        await log_mp_event(self.bot, data, f"{reactor.display_name} выписал {msg.author.display_name}")
+        await log_mp_event(self.bot, data, f"{reactor.display_name} выписал {target.display_name}")
 
     @commands.Cog.listener()
     async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent):
