@@ -276,7 +276,7 @@ class ModMenuSelect(discord.ui.Select):
 
             valid_users = []
             async for msg in thread.history(limit=500, oldest_first=True):
-                if msg.author.bot or "+" not in msg.content:
+                if msg.author.bot:
                     continue
                 has_check = False
                 for reaction in msg.reactions:
@@ -290,7 +290,11 @@ class ModMenuSelect(discord.ui.Select):
                     if has_check:
                         break
                 if has_check:
-                    uid = str(msg.author.id)
+                    # если в сообщении есть тег другого человека — плюс засчитывается ему,
+                    # а не автору сообщения (чужой плюс)
+                    human_mentions = [u for u in msg.mentions if not u.bot]
+                    uid = str(human_mentions[0].id) if human_mentions else str(msg.author.id)
+
                     if not any(u["id"] == uid for u in valid_users):
                         member = interaction.guild.get_member(int(uid))
                         if not member:
