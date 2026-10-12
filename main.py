@@ -13,7 +13,24 @@ intents.message_content = True
 intents.members = True
 intents.voice_states = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+# ───────────────────────────────────────────────
+# Прокси (опционально) — задаётся ОДНОЙ переменной в .env / Environment:
+#   PROXY_URL=http://user:pass@host:port
+# (логин:пароль можно не указывать, если прокси без авторизации)
+# Если PROXY_URL не задан — бот коннектится напрямую, без прокси.
+# ───────────────────────────────────────────────
+
+proxy_url = os.getenv("PROXY_URL")
+
+bot_kwargs = {"command_prefix": "!", "intents": intents}
+
+if proxy_url:
+    bot_kwargs["proxy"] = proxy_url
+    print("[PROXY] используется прокси из PROXY_URL")
+else:
+    print("[PROXY] не задан, подключение напрямую")
+
+bot = commands.Bot(**bot_kwargs)
 
 
 # ───────────────────────────────────────────────
