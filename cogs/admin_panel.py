@@ -303,9 +303,9 @@ class AdminPanelView(discord.ui.View):
 
 class QuotaResetModal(discord.ui.Modal, title="Сброс квоты личного канала"):
     user_input = discord.ui.TextInput(
-        label="Юзер (тег, упоминание или ID)",
+        label="Юзернейм или айди",
         style=discord.TextStyle.short,
-        placeholder="@username или ID",
+        placeholder="",
         required=True,
     )
 
