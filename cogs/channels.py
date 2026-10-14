@@ -1,178 +1,319 @@
 import discord
 from discord.ext import commands
-from discord.ui import Modal, TextInput, View
-import re
 
 from config import (
-    PANEL_CHANNEL_ID, TIER_ROLES, NO_TIER_CATEGORY_ID,
-    REFRESH_ROLES, TIER_CHECK_ROLE_ID
+    ADMIN_PANEL_CHANNEL_ID, MANAGEMENT_ACCESS, QUOTA_RESET_ACCESS,
+    PANEL_CHANNEL_ID, TICKETS_CHANNEL_ID, VACATION_CHANNEL_ID, DATABASE_CHANNEL_ID,
 )
-from database import get_collection
+from database import (
+    is_recruitment_open, set_recruitment_open,
+    get_admin_panel_message_id, set_admin_panel_message_id,
+    is_log_enabled, set_log_enabled,
+    get_panel_override, set_panel_override,
+    get_db, get_collection, get_tickets_collection, get_vacation_collection,
+)
 
 
-def has_refresh_role(member: discord.Member) -> bool:
-    return any(role.id in REFRESH_ROLES for role in member.roles)
+def has_admin_panel_access(member: discord.Member) -> bool:
+    if member.guild_permissions.administrator:
+        return True
+    role_ids = {r.id for r in member.roles}
+    return bool(role_ids & MANAGEMENT_ACCESS)
 
-def get_category_for_member(member: discord.Member) -> int:
-    member_role_ids = {role.id for role in member.roles}
-    for role_id, category_id in TIER_ROLES.items():
-        if role_id in member_role_ids:
-            return category_id
-    return NO_TIER_CATEGORY_ID
+
+def has_quota_reset_access(member: discord.Member) -> bool:
+    if member.guild_permissions.administrator:
+        return True
+    role_ids = {r.id for r in member.roles}
+    return bool(role_ids & QUOTA_RESET_ACCESS)
+
+
+def get_panel_registry():
+    """Лениво импортирует, чтобы не ловить циклический импорт когов."""
+    from cogs.channels import PanelView, build_panel_embed
+    from cogs.tickets import TicketPanelView, build_ticket_panel_embed
+    from cogs.vacation import VacationPanelView, build_vacation_panel_embed
+    from cogs.members import DatabasePanelView, build_database_embed
+
+    return {
+        "private":  (PANEL_CHANNEL_ID, build_panel_embed, PanelView, "Панель личных каналов"),
+        "tickets":  (TICKETS_CHANNEL_ID, build_ticket_panel_embed, TicketPanelView, "Панель заявок"),
+        "otpusk":   (VACATION_CHANNEL_ID, build_vacation_panel_embed, VacationPanelView, "Панель отпусков"),
+        "database": (DATABASE_CHANNEL_ID, build_database_embed, DatabasePanelView, "Панель базы участников"),
+    }
+
+
+async def resend_panel(guild: discord.Guild, bot_user: discord.ClientUser, panel_key: str) -> bool:
+    """Удаляет старые сообщения бота в канале панели и постит свежий эмбед."""
+    registry = get_panel_registry()
+    channel_id, embed_fn, view_cls, _ = registry[panel_key]
+    channel = guild.get_channel(channel_id)
+    if not channel:
+        return False
+
+    async for message in channel.history(limit=100):
+        if message.author == bot_user:
+            await message.delete()
+
+    await channel.send(embed=embed_fn(), view=view_cls())
+    return True
 
 
 # ───────────────────────────────────────────────
-# UI
+# Эмбед главной админ-панели
 # ───────────────────────────────────────────────
 
-class ChannelModal(Modal, title="Создать личное дело"):
-    channel_name = TextInput(
-        label="Название",
-        placeholder="ник в игре",
-        min_length=1,
-        max_length=100
-    )
+def build_admin_panel_embed() -> discord.Embed:
+    open_now = is_recruitment_open()
 
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        user_id = str(interaction.user.id)
+    def status(key):
+        return "🟢 Включены" if is_log_enabled(key) else "🔴 Выключены"
 
-        try:
-            collection = get_collection()
-            existing_entry = collection.find_one({"user_id": user_id})
-        except Exception as e:
-            await interaction.followup.send("ошибка базы данных", ephemeral=True)
-            print(f"[ERROR] MongoDB: {e}")
-            return
-
-        if existing_entry:
-            await interaction.followup.send("у тебя уже есть канал или квота израсходована", ephemeral=True)
-            return
-
-        category_id = get_category_for_member(interaction.user)
-        category = interaction.guild.get_channel(category_id)
-
-        if not category:
-            await interaction.followup.send("категория не найдена, обратись к администратору", ephemeral=True)
-            return
-
-        name = self.channel_name.value.strip().replace(" ", "-").lower()
-        tier_check_role = interaction.guild.get_role(TIER_CHECK_ROLE_ID)
-        overwrites = {
-            interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(view_channel=True),
-        }
-        if tier_check_role:
-            overwrites[tier_check_role] = discord.PermissionOverwrite(view_channel=True)
-
-        channel = await interaction.guild.create_text_channel(name, category=category, overwrites=overwrites)
-        collection.insert_one({"user_id": user_id, "channel_id": channel.id})
-        await interaction.followup.send(f"канал {channel.mention} создан!", ephemeral=True)
-
-
-class PanelView(View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Создать личное дело", style=discord.ButtonStyle.blurple, custom_id="reg_channel", emoji="📁")
-    async def reg_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ChannelModal())
-
-
-def build_panel_embed() -> discord.Embed:
-    from database import get_panel_override
-    override = get_panel_override("private")
-
-    default_title = "📁 Создание личного дела"
-    default_description = (
-        "Твой канал будет виден только тебе, людям с ролью <@&1510608237878181958> и админам.\n\n"
-        "В нем должны быть твои откаты, которые ты после мп должен будешь залить на ютуб/рутуб, "
-        "твои скрины и откаты с гг при необходимости. "
-        "Тут же ты можешь задавать вопросы по скиллу"
-    )
+    recruitment_text = "🟢 Открыт" if open_now else "🔴 Закрыт"
+    color = 0x2ecc71 if open_now else 0xe74c3c
 
     embed = discord.Embed(
-        title=override["title"] if override else default_title,
-        description=override["description"] if override else default_description,
-        color=0x1ABC9C
+        title="⚙️ Админ-панель",
+        description=(
+            f"**Набор в семью:** {recruitment_text}\n\n"
+            f"**Войс-логи:** {status('voice')}\n"
+            f"**Логи входов/выходов:** {status('joins')}\n"
+            f"**Логи ролей:** {status('roles')}\n"
+            f"**Логи ника/имени:** {status('names')}\n"
+            f"**Логи сообщений:** {status('messages')}\n"
+            f"**Логи модерации (баны/кики):** {status('moderation')}\n\n"
+            "Выбери действие в одном из меню ниже."
+        ),
+        color=color
     )
-    embed.set_image(url="https://cdn.discordapp.com/attachments/1510631159414128700/1510639319969304646/0531.gif")
+    embed.set_footer(text="Доступно только рекрутерам и администрации")
     return embed
 
 
 # ───────────────────────────────────────────────
-# Ког
+# Модалка редактирования текста панели
 # ───────────────────────────────────────────────
 
-class ChannelsCog(commands.Cog):
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
-        bot.add_view(PanelView())
+class EditPanelModal(discord.ui.Modal):
+    def __init__(self, panel_key: str, panel_label: str, current_title: str, current_description: str):
+        super().__init__(title=f"Редактирование: {panel_label}"[:45])
+        self.panel_key = panel_key
 
-    @discord.app_commands.command(name="panels", description="Отправить панель в нужный канал")
-    async def panels(self, interaction: discord.Interaction, panel: str):
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("нет прав", ephemeral=True)
+        self.title_input = discord.ui.TextInput(
+            label="Заголовок панели",
+            style=discord.TextStyle.short,
+            default=current_title or "",
+            max_length=256,
+            required=True,
+        )
+        self.description_input = discord.ui.TextInput(
+            label="Текст панели",
+            style=discord.TextStyle.paragraph,
+            default=current_description or "",
+            max_length=4000,
+            required=True,
+        )
+        self.add_item(self.title_input)
+        self.add_item(self.description_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        set_panel_override(self.panel_key, self.title_input.value, self.description_input.value)
+
+        ok = await resend_panel(interaction.guild, interaction.client.user, self.panel_key)
+
+        if ok:
+            await interaction.followup.send("✅ Панель обновлена и переотправлена в канал", ephemeral=True)
+        else:
+            await interaction.followup.send(
+                "⚠️ Текст сохранён, но канал панели не найден — проверь ID канала в config.py",
+                ephemeral=True
+            )
+
+
+# ───────────────────────────────────────────────
+# View главной админ-панели
+# ───────────────────────────────────────────────
+
+class AdminPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    # ── Набор в семью ──
+    @discord.ui.select(
+        placeholder="Набор в семью...",
+        custom_id="admin_panel_recruitment",
+        options=[
+            discord.SelectOption(label="Открыть набор", value="recruitment_open", emoji="🟢",
+                                  description="Разрешить подавать заявки в семью"),
+            discord.SelectOption(label="Закрыть набор", value="recruitment_close", emoji="🔴",
+                                  description="Запретить подавать заявки в семью"),
+        ]
+    )
+    async def select_recruitment(self, interaction: discord.Interaction, select: discord.ui.Select):
+        if not has_admin_panel_access(interaction.user):
+            await interaction.response.send_message("нет прав для управления панелью", ephemeral=True)
             return
 
-        allowed = ["tickets", "otpusk", "private", "database", "all"]
-        if panel not in allowed:
-            await interaction.response.send_message(
-                f"неизвестная панель. доступные: {', '.join(allowed)}", ephemeral=True
-            )
+        value = select.values[0]
+        if value == "recruitment_open":
+            set_recruitment_open(True)
+            feedback = "✅ Набор в семью открыт"
+        else:
+            set_recruitment_open(False)
+            feedback = "✅ Набор в семью закрыт"
+
+        await interaction.response.edit_message(embed=build_admin_panel_embed(), view=self)
+        await interaction.followup.send(feedback, ephemeral=True)
+
+    # ── Логи ──
+    @discord.ui.select(
+        placeholder="Логи...",
+        custom_id="admin_panel_logs",
+        options=[
+            discord.SelectOption(label="Войс-логи: переключить", value="toggle_voice", emoji="🔊",
+                                  description="Вкл/выкл логи войса (джоины/муты/дисконнекты)"),
+            discord.SelectOption(label="Логи входов/выходов: переключить", value="toggle_joins", emoji="🚪",
+                                  description="Вкл/выкл логи входа и выхода участников с сервера"),
+            discord.SelectOption(label="Логи ролей: переключить", value="toggle_roles", emoji="🎭",
+                                  description="Вкл/выкл логи выдачи/снятия ролей"),
+            discord.SelectOption(label="Логи ника/имени: переключить", value="toggle_names", emoji="✏️",
+                                  description="Вкл/выкл логи смены ника и юзернейма"),
+            discord.SelectOption(label="Логи сообщений: переключить", value="toggle_messages", emoji="📝",
+                                  description="Вкл/выкл логи редактирования/удаления сообщений"),
+            discord.SelectOption(label="Логи модерации: переключить", value="toggle_moderation", emoji="🔨",
+                                  description="Вкл/выкл логи банов/киков"),
+        ]
+    )
+    async def select_logs(self, interaction: discord.Interaction, select: discord.ui.Select):
+        if not has_admin_panel_access(interaction.user):
+            await interaction.response.send_message("нет прав для управления панелью", ephemeral=True)
+            return
+
+        labels = {
+            "toggle_voice": ("voice", "Войс-логи"),
+            "toggle_joins": ("joins", "Логи входов/выходов"),
+            "toggle_roles": ("roles", "Логи ролей"),
+            "toggle_names": ("names", "Логи ника/имени"),
+            "toggle_messages": ("messages", "Логи сообщений"),
+            "toggle_moderation": ("moderation", "Логи модерации"),
+        }
+
+        value = select.values[0]
+        if value in labels:
+            log_key, log_label = labels[value]
+            new_state = not is_log_enabled(log_key)
+            set_log_enabled(log_key, new_state)
+            feedback = f"✅ {log_label} {'включены' if new_state else 'выключены'}"
+        else:
+            feedback = "неизвестное действие"
+
+        await interaction.response.edit_message(embed=build_admin_panel_embed(), view=self)
+        await interaction.followup.send(feedback, ephemeral=True)
+
+    # ── Переотправка панелей ──
+    @discord.ui.select(
+        placeholder="Отправить панель...",
+        custom_id="admin_panel_resend",
+        options=[
+            discord.SelectOption(label="Панель заявок", value="tickets", emoji="📩"),
+            discord.SelectOption(label="Панель отпусков", value="otpusk", emoji="🏖️"),
+            discord.SelectOption(label="Панель личных каналов", value="private", emoji="🏠"),
+            discord.SelectOption(label="Панель базы участников", value="database", emoji="📋"),
+            discord.SelectOption(label="Все панели", value="all", emoji="📦"),
+        ]
+    )
+    async def select_resend(self, interaction: discord.Interaction, select: discord.ui.Select):
+        if not has_admin_panel_access(interaction.user):
+            await interaction.response.send_message("нет прав для управления панелью", ephemeral=True)
             return
 
         await interaction.response.defer(ephemeral=True)
+
+        value = select.values[0]
+        registry = get_panel_registry()
+        targets = registry.keys() if value == "all" else [value]
+
         sent = []
-
-        # Импортируем нужные вещи из других когов
-        from cogs.tickets import TicketPanelView, build_ticket_panel_embed, TICKETS_CHANNEL_ID
-        from cogs.vacation import VacationPanelView, build_vacation_panel_embed, VACATION_CHANNEL_ID
-        from cogs.members import DatabasePanelView, build_database_embed, DATABASE_CHANNEL_ID
-
-        async def send_panel(channel_id, embed_fn, view_fn):
-            ch = interaction.guild.get_channel(channel_id)
-            if not ch:
-                return False
-            async for message in ch.history(limit=100):
-                if message.author == self.bot.user:
-                    await message.delete()
-            await ch.send(embed=embed_fn(), view=view_fn())
-            return True
-
-        if panel in ("private", "all"):
-            ok = await send_panel(PANEL_CHANNEL_ID, build_panel_embed, PanelView)
+        for key in targets:
+            ok = await resend_panel(interaction.guild, interaction.client.user, key)
             if ok:
-                sent.append("private")
-
-        if panel in ("tickets", "all"):
-            ok = await send_panel(TICKETS_CHANNEL_ID, build_ticket_panel_embed, TicketPanelView)
-            if ok:
-                sent.append("tickets")
-
-        if panel in ("otpusk", "all"):
-            ok = await send_panel(VACATION_CHANNEL_ID, build_vacation_panel_embed, VacationPanelView)
-            if ok:
-                sent.append("otpusk")
-
-        if panel in ("database", "all"):
-            ok = await send_panel(DATABASE_CHANNEL_ID, build_database_embed, DatabasePanelView)
-            if ok:
-                sent.append("database")
+                sent.append(key)
 
         await interaction.followup.send(
-            f"отправлено: {', '.join(sent) if sent else 'ничего'}", ephemeral=True
+            f"отправлено: {', '.join(sent) if sent else 'ничего (проверь ID каналов)'}",
+            ephemeral=True
         )
 
-    @discord.app_commands.command(name="refresh", description="Сбросить квоту на создание канала")
-    async def refresh(self, interaction: discord.Interaction, user: str):
-        if not has_refresh_role(interaction.user):
-            await interaction.response.send_message("нет прав", ephemeral=True)
+    # ── Редактирование текста панелей ──
+    @discord.ui.select(
+        placeholder="Редактировать текст панели...",
+        custom_id="admin_panel_edit",
+        options=[
+            discord.SelectOption(label="Панель заявок", value="tickets", emoji="📩"),
+            discord.SelectOption(label="Панель отпусков", value="otpusk", emoji="🏖️"),
+            discord.SelectOption(label="Панель личных каналов", value="private", emoji="🏠"),
+            discord.SelectOption(label="Панель базы участников", value="database", emoji="📋"),
+        ]
+    )
+    async def select_edit(self, interaction: discord.Interaction, select: discord.ui.Select):
+        if not has_admin_panel_access(interaction.user):
+            await interaction.response.send_message("нет прав для управления панелью", ephemeral=True)
             return
 
-        match = re.search(r"\d{17,20}", user)
+        panel_key = select.values[0]
+        registry = get_panel_registry()
+        _, embed_fn, _, label = registry[panel_key]
+
+        current_embed = embed_fn()  # уже учитывает существующий оверрайд, если он был
+
+        await interaction.response.send_modal(
+            EditPanelModal(
+                panel_key=panel_key,
+                panel_label=label,
+                current_title=current_embed.title,
+                current_description=current_embed.description,
+            )
+        )
+
+    # ── Сброс квоты + статистика ──
+    @discord.ui.button(label="Сбросить квоту участнику", style=discord.ButtonStyle.secondary,
+                        emoji="🔄", custom_id="admin_panel_quota_btn")
+    async def quota_reset_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not has_quota_reset_access(interaction.user):
+            await interaction.response.send_message("нет прав для сброса квоты", ephemeral=True)
+            return
+        await interaction.response.send_modal(QuotaResetModal())
+
+    @discord.ui.button(label="Статистика", style=discord.ButtonStyle.secondary,
+                        emoji="📊", custom_id="admin_panel_stats_btn")
+    async def stats_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not has_admin_panel_access(interaction.user):
+            await interaction.response.send_message("нет прав для просмотра статистики", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        embed = build_stats_embed(interaction.guild)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# ───────────────────────────────────────────────
+# Модалка сброса квоты личного канала
+# ───────────────────────────────────────────────
+
+class QuotaResetModal(discord.ui.Modal, title="Сброс квоты личного канала"):
+    user_input = discord.ui.TextInput(
+        label="Юзернейм или айди",
+        style=discord.TextStyle.short,
+        placeholder="",
+        required=True,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        import re
+        match = re.search(r"\d{17,20}", self.user_input.value)
         if not match:
-            await interaction.response.send_message("укажи тег или айди пользователя", ephemeral=True)
+            await interaction.response.send_message("не удалось найти ID в введённом тексте", ephemeral=True)
             return
 
         user_id = match.group()
@@ -181,36 +322,88 @@ class ChannelsCog(commands.Cog):
             result = collection.delete_one({"user_id": user_id})
         except Exception as e:
             await interaction.response.send_message("ошибка базы данных", ephemeral=True)
-            print(f"[ERROR] MongoDB: {e}")
+            print(f"[ERROR] admin_panel quota reset: {e}")
             return
 
         if result.deleted_count == 0:
-            await interaction.response.send_message("он ещё не регал", ephemeral=True)
+            await interaction.response.send_message("этот участник ещё не создавал личный канал", ephemeral=True)
             return
 
-        await interaction.response.send_message("квота на создание личного канала сброшена", ephemeral=True)
+        await interaction.response.send_message(f"✅ квота сброшена для <@{user_id}>", ephemeral=True)
 
-    @discord.app_commands.command(name="logs", description="Включить или выключить логи")
-    async def logs_cmd(self, interaction: discord.Interaction, type: str):
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("нет прав", ephemeral=True)
+
+# ───────────────────────────────────────────────
+# Статистика по серверу
+# ───────────────────────────────────────────────
+
+def build_stats_embed(guild: discord.Guild) -> discord.Embed:
+    try:
+        db = get_db()
+        members_count = db["members_game"].count_documents({})
+        counters_doc = {doc["_id"]: doc.get("value") for doc in db["counters"].find({})}
+        mp_counter = counters_doc.get("mp_counter", "—")
+        uid_counter = counters_doc.get("members_uid_counter", "—")
+    except Exception as e:
+        members_count, mp_counter, uid_counter = "ошибка", "ошибка", "ошибка"
+        print(f"[ERROR] stats members/counters: {e}")
+
+    try:
+        open_tickets = get_tickets_collection().count_documents({})
+    except Exception:
+        open_tickets = "ошибка"
+
+    try:
+        pending_vacations = get_vacation_collection().count_documents({})
+    except Exception:
+        pending_vacations = "ошибка"
+
+    try:
+        personal_channels = get_collection().count_documents({})
+    except Exception:
+        personal_channels = "ошибка"
+
+    embed = discord.Embed(title="📊 Статистика сервера", color=0x3498db)
+    embed.add_field(name="Участников на сервере", value=str(guild.member_count), inline=True)
+    embed.add_field(name="Участников в базе", value=str(members_count), inline=True)
+    embed.add_field(name="Личных каналов создано", value=str(personal_channels), inline=True)
+    embed.add_field(name="Открытых заявок", value=str(open_tickets), inline=True)
+    embed.add_field(name="Заявок на отпуск в ожидании", value=str(pending_vacations), inline=True)
+    embed.add_field(name="Счётчик МП", value=str(mp_counter), inline=True)
+    embed.add_field(name="Счётчик записей базы (uid)", value=str(uid_counter), inline=True)
+    embed.timestamp = discord.utils.utcnow()
+    return embed
+
+
+# ───────────────────────────────────────────────
+# Ког
+# ───────────────────────────────────────────────
+
+class AdminPanelCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        bot.add_view(AdminPanelView())
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        await self.ensure_panel_posted()
+
+    async def ensure_panel_posted(self):
+        channel = self.bot.get_channel(ADMIN_PANEL_CHANNEL_ID)
+        if channel is None:
+            print(f"[ADMIN PANEL] канал {ADMIN_PANEL_CHANNEL_ID} не найден")
             return
 
-        await interaction.response.defer(ephemeral=True)
+        existing_id = get_admin_panel_message_id()
+        if existing_id:
+            try:
+                await channel.fetch_message(int(existing_id))
+                return  # панель уже существует и доступна, ничего не постим заново
+            except (discord.NotFound, discord.HTTPException):
+                pass  # сообщение удалили — запостим новое ниже
 
-        from database import is_log_enabled, set_log_enabled
-        allowed = ["voice", "joins"]
-        if type not in allowed:
-            await interaction.followup.send(
-                f"неизвестный тип. доступные: {', '.join(allowed)}", ephemeral=True
-            )
-            return
-
-        current = is_log_enabled(type)
-        set_log_enabled(type, not current)
-        status = "включены ✅" if not current else "выключены ❌"
-        await interaction.followup.send(f"логи `{type}` {status}", ephemeral=True)
+        msg = await channel.send(embed=build_admin_panel_embed(), view=AdminPanelView())
+        set_admin_panel_message_id(msg.id)
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(ChannelsCog(bot))
+    await bot.add_cog(AdminPanelCog(bot))
