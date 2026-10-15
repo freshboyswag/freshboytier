@@ -307,8 +307,14 @@ class TicketPanelView(View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="📩 Подать заявку", style=discord.ButtonStyle.blurple, custom_id="submit_ticket")
-    async def submit_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.select(
+        placeholder="Выбери действие...",
+        custom_id="submit_ticket_select",
+        options=[
+            discord.SelectOption(label="Подать заявку", value="submit_ticket", emoji="📩"),
+        ]
+    )
+    async def submit_ticket(self, interaction: discord.Interaction, select: discord.ui.Select):
         if not is_recruitment_open():
             await interaction.response.send_message(
                 "❌ набор в семью сейчас закрыт, попробуй позже",
@@ -316,6 +322,12 @@ class TicketPanelView(View):
             )
             return
         await interaction.response.send_modal(TicketModal())
+        # сбрасываем визуально выбранный пункт селекта на исходном сообщении,
+        # иначе после закрытия формы без отправки клиент не даёт выбрать тот же пункт снова
+        try:
+            await interaction.message.edit(view=TicketPanelView())
+        except discord.HTTPException:
+            pass
 
 
 def build_ticket_panel_embed() -> discord.Embed:
