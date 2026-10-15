@@ -208,3 +208,15 @@ def add_category_to_pool(tier_key: str, category_id: str):
         )
     except Exception as e:
         print(f"[ERROR] add_category_to_pool: {e}")
+
+def set_category_pool(tier_key: str, categories: list):
+    """Полностью заменяет список категорий тира (используется формой редактирования в админ-панели)."""
+    try:
+        col = get_category_pool_collection()
+        col.update_one(
+            {"_id": tier_key},
+            {"$set": {"categories": [str(c) for c in categories]}},
+            upsert=True
+        )
+    except Exception as e:
+        print(f"[ERROR] set_category_pool: {e}")
