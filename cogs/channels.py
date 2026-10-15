@@ -7,18 +7,58 @@ from config import (
     PANEL_CHANNEL_ID, TIER_ROLES, NO_TIER_CATEGORY_ID,
     REFRESH_ROLES, TIER_CHECK_ROLE_ID
 )
-from database import get_collection
+from database import get_collection, get_category_pool, add_category_to_pool
 
 
 def has_refresh_role(member: discord.Member) -> bool:
     return any(role.id in REFRESH_ROLES for role in member.roles)
 
-def get_category_for_member(member: discord.Member) -> int:
+def get_tier_key(member: discord.Member) -> str:
+    """Ключ пула категорий для участника: ID роли тира или 'no_tier'."""
     member_role_ids = {role.id for role in member.roles}
-    for role_id, category_id in TIER_ROLES.items():
+    for role_id in TIER_ROLES:
         if role_id in member_role_ids:
-            return category_id
-    return NO_TIER_CATEGORY_ID
+            return str(role_id)
+    return "no_tier"
+
+
+async def get_or_create_category(guild: discord.Guild, member: discord.Member):
+    """
+    Находит свободную (<50 каналов) категорию из пула тира участника.
+    Пул изначально = одна категория из config.py (TIER_ROLES/NO_TIER_CATEGORY_ID),
+    дальше пополняется вручную через админ-панель ("⚙️ Общесерверные настройки" → категории).
+    Если все категории пула заполнены — бот автоматически создаёт новую с суффиксом
+    "#2"/"#3"/... по имени последней категории пула и сам добавляет её в пул.
+    """
+    tier_key = get_tier_key(member)
+    default_cat_id = TIER_ROLES.get(int(tier_key)) if tier_key != "no_tier" else NO_TIER_CATEGORY_ID
+
+    pool = get_category_pool(tier_key, default_category_id=default_cat_id)
+
+    base_name = None
+    for cat_id in pool:
+        category = guild.get_channel(int(cat_id))
+        if category and isinstance(category, discord.CategoryChannel):
+            base_name = category.name
+            if len(category.channels) < 50:
+                return category
+
+    # весь пул заполнен (или пуст, но дефолтная категория не найдена) — создаём новую сами
+    try:
+        name_root = re.sub(r"\s*#\d+$", "", base_name) if base_name else f"личные каналы ({tier_key})"
+        existing_names = {c.name for c in guild.categories}
+        counter = 2
+        candidate = f"{name_root} #{counter}"
+        while candidate in existing_names:
+            counter += 1
+            candidate = f"{name_root} #{counter}"
+        new_category = await guild.create_category(candidate)
+        add_category_to_pool(tier_key, str(new_category.id))
+        print(f"[CATEGORY] лимит категории исчерпан, создана '{candidate}' для {tier_key}")
+        return new_category
+    except Exception as e:
+        print(f"[ERROR] авто-создание категории для {tier_key}: {e}")
+        return None
 
 
 # ───────────────────────────────────────────────
@@ -49,11 +89,12 @@ class ChannelModal(Modal, title="Создать личное дело"):
             await interaction.followup.send("у тебя уже есть канал или квота израсходована", ephemeral=True)
             return
 
-        category_id = get_category_for_member(interaction.user)
-        category = interaction.guild.get_channel(category_id)
+        category = await get_or_create_category(interaction.guild, interaction.user)
 
         if not category:
-            await interaction.followup.send("категория не найдена, обратись к администратору", ephemeral=True)
+            await interaction.followup.send(
+                "не удалось найти или создать категорию, обратись к администратору", ephemeral=True
+            )
             return
 
         name = self.channel_name.value.strip().replace(" ", "-").lower()
