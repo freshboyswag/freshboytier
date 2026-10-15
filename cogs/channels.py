@@ -108,6 +108,10 @@ class ChannelModal(Modal, title="Создать личное дело"):
 
         channel = await interaction.guild.create_text_channel(name, category=category, overwrites=overwrites)
         collection.insert_one({"user_id": user_id, "channel_id": channel.id})
+
+        # TODO: заглушка, придумать нормальный текст приветствия в личном канале
+        await channel.send(f"{interaction.user.mention} добро пожаловать в твой личный канал")
+
         await interaction.followup.send(f"канал {channel.mention} создан!", ephemeral=True)
 
 
