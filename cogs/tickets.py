@@ -306,6 +306,11 @@ class TicketActionsView(View):
 class TicketPanelView(View):
     def __init__(self):
         super().__init__(timeout=None)
+        if not is_recruitment_open():
+            for item in self.children:
+                if isinstance(item, discord.ui.Select):
+                    item.disabled = True
+                    item.placeholder = "Набор закрыт"
 
     @discord.ui.select(
         placeholder="Выбери действие...",
