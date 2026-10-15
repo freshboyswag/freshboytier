@@ -38,6 +38,9 @@ def get_vacation_collection():
 def get_settings_collection():
     return get_db()["bot_settings"]
 
+def get_category_pool_collection():
+    return get_db()["category_pools"]
+
 
 # ───────────────────────────────────────────────
 # Кастомные тексты панелей (редактируются из админ-панели)
@@ -170,3 +173,38 @@ async def save_reg_data(message_id: int, update: dict):
         col.update_one({"message_id": str(message_id)}, {"$set": update})
     except Exception as e:
         print(f"[ERROR] MongoDB reg save: {e}")
+
+
+# ───────────────────────────────────────────────
+# Пул категорий для личных каналов (с заделом на лимит в 50 каналов)
+# ───────────────────────────────────────────────
+
+def get_category_pool(tier_key: str, default_category_id=None) -> list:
+    """
+    Возвращает список ID категорий (строки) для тира/"no_tier".
+    Если пула ещё нет в базе — сидирует его дефолтной категорией из config.py
+    (TIER_ROLES / NO_TIER_CATEGORY_ID) и сохраняет, чтобы дальше расширять именно его.
+    """
+    try:
+        col = get_category_pool_collection()
+        doc = col.find_one({"_id": tier_key})
+        if doc and doc.get("categories"):
+            return doc["categories"]
+        categories = [str(default_category_id)] if default_category_id else []
+        if categories:
+            col.update_one({"_id": tier_key}, {"$set": {"categories": categories}}, upsert=True)
+        return categories
+    except Exception as e:
+        print(f"[ERROR] get_category_pool: {e}")
+        return [str(default_category_id)] if default_category_id else []
+
+def add_category_to_pool(tier_key: str, category_id: str):
+    try:
+        col = get_category_pool_collection()
+        col.update_one(
+            {"_id": tier_key},
+            {"$addToSet": {"categories": str(category_id)}},
+            upsert=True
+        )
+    except Exception as e:
+        print(f"[ERROR] add_category_to_pool: {e}")
