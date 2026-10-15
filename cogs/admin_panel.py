@@ -167,9 +167,15 @@ class SendPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=120)
         for key, label in PANEL_CHOICES + [("all", "📦 Все панели")]:
-            btn = discord.ui.Button(label=label, style=discord.ButtonStyle.blurple, custom_id=f"admin_panel_send_{key}")
+            btn = discord.ui.Button(label=label, style=discord.ButtonStyle.blurple,
+                                     custom_id=f"admin_panel_send_{key}", row=0)
             btn.callback = self._make_callback(key)
             self.add_item(btn)
+
+        back_btn = discord.ui.Button(label="⬅️ Назад", style=discord.ButtonStyle.secondary,
+                                      custom_id="admin_panel_send_back", row=1)
+        back_btn.callback = self._back
+        self.add_item(back_btn)
 
     def _make_callback(self, key: str):
         async def callback(interaction: discord.Interaction):
@@ -189,14 +195,23 @@ class SendPanelView(discord.ui.View):
             )
         return callback
 
+    async def _back(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(content="Что делаем с панелями?", view=PanelsMenuView())
+
 
 class EditPanelChoiceView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=120)
         for key, label in PANEL_CHOICES:
-            btn = discord.ui.Button(label=label, style=discord.ButtonStyle.blurple, custom_id=f"admin_panel_edit_{key}")
+            btn = discord.ui.Button(label=label, style=discord.ButtonStyle.blurple,
+                                     custom_id=f"admin_panel_edit_{key}", row=0)
             btn.callback = self._make_callback(key)
             self.add_item(btn)
+
+        back_btn = discord.ui.Button(label="⬅️ Назад", style=discord.ButtonStyle.secondary,
+                                      custom_id="admin_panel_edit_back", row=1)
+        back_btn.callback = self._back
+        self.add_item(back_btn)
 
     def _make_callback(self, key: str):
         async def callback(interaction: discord.Interaction):
@@ -215,6 +230,9 @@ class EditPanelChoiceView(discord.ui.View):
                 )
             )
         return callback
+
+    async def _back(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(content="Что делаем с панелями?", view=PanelsMenuView())
 
 
 # ───────────────────────────────────────────────
