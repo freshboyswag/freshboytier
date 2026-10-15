@@ -12,7 +12,7 @@ from database import (
     is_log_enabled, set_log_enabled,
     get_panel_override, set_panel_override,
     get_db, get_collection, get_tickets_collection, get_vacation_collection,
-    get_category_pool, add_category_to_pool,
+    get_category_pool, set_category_pool,
 )
 
 
@@ -297,87 +297,115 @@ async def _refresh_main_panel(interaction: discord.Interaction):
 # Подменю: Общесерверные настройки (категории личных каналов)
 # ───────────────────────────────────────────────
 
-def build_categories_text(guild: discord.Guild) -> str:
-    lines = []
-
-    def pool_lines(tier_key: str, header: str, default_cat_id):
-        pool = get_category_pool(tier_key, default_category_id=default_cat_id)
-        out = [f"**{header}:**"]
-        if not pool:
-            out.append("\u00a0\u00a0_пул пуст_")
-        for cat_id in pool:
-            cat = guild.get_channel(int(cat_id))
-            if cat:
-                out.append(f"\u00a0\u00a0`{cat.name}` — {len(cat.channels)}/50")
-            else:
-                out.append(f"\u00a0\u00a0`{cat_id}` — категория не найдена на сервере")
-        return out
-
+def _all_tier_keys_with_defaults(guild: discord.Guild):
+    """[(tier_key, label, default_category_id), ...] для всех тиров + 'без тира'."""
+    result = []
     for role_id, default_cat_id in TIER_ROLES.items():
         role = guild.get_role(role_id)
-        header = role.name if role else f"роль {role_id}"
-        lines.extend(pool_lines(str(role_id), header, default_cat_id))
-
-    lines.extend(pool_lines("no_tier", "Без тира", NO_TIER_CATEGORY_ID))
-
-    return "\n".join(lines)
+        label = role.name if role else f"роль {role_id}"
+        result.append((str(role_id), label, default_cat_id))
+    result.append(("no_tier", "Без тира", NO_TIER_CATEGORY_ID))
+    return result
 
 
-class AddCategoryModal(discord.ui.Modal):
-    def __init__(self, tier_key: str, tier_label: str):
-        super().__init__(title=f"Добавить категорию: {tier_label}"[:45])
-        self.tier_key = tier_key
-        self.category_input = discord.ui.TextInput(
-            label="ID категории",
-            style=discord.TextStyle.short,
-            placeholder="например: 1523386918375653511",
-            required=True,
-            max_length=25,
-        )
-        self.add_item(self.category_input)
+def build_categories_embed(guild: discord.Guild) -> discord.Embed:
+    """Плоский список всех категорий личных каналов, отсортированный по позиции на сервере."""
+    found = []   # (position, category_obj)
+    missing = [] # cat_id без найденной категории
+
+    for tier_key, _, default_cat_id in _all_tier_keys_with_defaults(guild):
+        pool = get_category_pool(tier_key, default_category_id=default_cat_id)
+        for cat_id in pool:
+            category = guild.get_channel(int(cat_id))
+            if category and isinstance(category, discord.CategoryChannel):
+                found.append((category.position, category))
+            else:
+                missing.append(cat_id)
+
+    found.sort(key=lambda pair: pair[0])
+
+    lines = []
+    for _, category in found:
+        lines.append(f"`{category.name}` — {len(category.channels)}/50")
+    for cat_id in missing:
+        lines.append(f"`{cat_id}` — категория не найдена на сервере")
+
+    if not lines:
+        lines.append("_категории ещё не настроены_")
+
+    embed = discord.Embed(
+        title="🗂 Категории личных каналов",
+        description="**Кол-во каналов в категориях:**\n" + "\n".join(lines),
+        color=0x1ABC9C,
+    )
+    return embed
+
+
+class EditCategoriesModal(discord.ui.Modal, title="Категории личных каналов"):
+    def __init__(self, guild: discord.Guild):
+        super().__init__()
+        self.tier_fields = []  # [(tier_key, TextInput), ...]
+
+        for tier_key, label, default_cat_id in _all_tier_keys_with_defaults(guild):
+            pool = get_category_pool(tier_key, default_category_id=default_cat_id)
+            field = discord.ui.TextInput(
+                label=label[:45],
+                style=discord.TextStyle.short,
+                default=", ".join(pool),
+                placeholder="ID категорий через запятую",
+                required=False,
+                max_length=400,
+            )
+            self.tier_fields.append((tier_key, field))
+            self.add_item(field)
 
     async def on_submit(self, interaction: discord.Interaction):
-        raw = self.category_input.value.strip()
-        if not raw.isdigit():
-            await interaction.response.send_message("это не похоже на ID (нужны только цифры)", ephemeral=True)
-            return
+        guild = interaction.guild
+        parsed = {}
 
-        category = interaction.guild.get_channel(int(raw))
-        if not category or not isinstance(category, discord.CategoryChannel):
-            await interaction.response.send_message("категория с таким ID не найдена на сервере", ephemeral=True)
-            return
+        for tier_key, field in self.tier_fields:
+            raw_ids = [x.strip() for x in field.value.split(",") if x.strip()]
 
-        add_category_to_pool(self.tier_key, raw)
-        await interaction.response.send_message(
-            f"✅ категория **{category.name}** добавлена в пул ({len(category.channels)}/50 занято)",
-            ephemeral=True
-        )
+            if not raw_ids:
+                await interaction.response.send_message(
+                    f"список категорий не может быть пустым (поле «{field.label}»)", ephemeral=True
+                )
+                return
+
+            for cat_id in raw_ids:
+                if not cat_id.isdigit():
+                    await interaction.response.send_message(
+                        f"`{cat_id}` — это не ID (нужны только цифры), поле «{field.label}»", ephemeral=True
+                    )
+                    return
+                category = guild.get_channel(int(cat_id))
+                if not category or not isinstance(category, discord.CategoryChannel):
+                    await interaction.response.send_message(
+                        f"категория с ID `{cat_id}` не найдена на сервере, поле «{field.label}»", ephemeral=True
+                    )
+                    return
+
+            parsed[tier_key] = raw_ids
+
+        for tier_key, ids in parsed.items():
+            set_category_pool(tier_key, ids)
+
+        await interaction.response.send_message("✅ категории обновлены", ephemeral=True)
 
 
 class GeneralSettingsView(discord.ui.View):
     """Общесерверные настройки: редактирование ID категорий для личных каналов."""
     def __init__(self, guild: discord.Guild):
         super().__init__(timeout=120)
-        for role_id in TIER_ROLES:
-            role = guild.get_role(role_id)
-            label = f"➕ {role.name}" if role else f"➕ роль {role_id}"
-            btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.blurple,
-                                     custom_id=f"admin_panel_cat_add_{role_id}")
-            btn.callback = self._make_callback(str(role_id), role.name if role else str(role_id))
-            self.add_item(btn)
+        self.guild = guild
 
-        btn_no_tier = discord.ui.Button(label="➕ Без тира", style=discord.ButtonStyle.blurple,
-                                         custom_id="admin_panel_cat_add_no_tier")
-        btn_no_tier.callback = self._make_callback("no_tier", "без тира")
-        self.add_item(btn_no_tier)
-
-    def _make_callback(self, tier_key: str, tier_label: str):
-        async def callback(interaction: discord.Interaction):
-            if not has_admin_panel_access(interaction.user):
-                await interaction.response.send_message("нет прав", ephemeral=True)
-                return
-            await interaction.response.send_modal(AddCategoryModal(tier_key=tier_key, tier_label=tier_label))
-        return callback
+    @discord.ui.button(label="✏️ Изменить категории", style=discord.ButtonStyle.blurple,
+                        custom_id="admin_panel_cat_edit")
+    async def edit_categories(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not has_admin_panel_access(interaction.user):
+            await interaction.response.send_message("нет прав", ephemeral=True)
+            return
+        await interaction.response.send_modal(EditCategoriesModal(guild=self.guild))
 
 
 # ───────────────────────────────────────────────
@@ -433,6 +461,8 @@ class AdminPanelView(discord.ui.View):
         new_state = not is_recruitment_open()
         set_recruitment_open(new_state)
         await interaction.response.edit_message(embed=build_admin_panel_embed(), view=AdminPanelView())
+        # пересобираем панель заявок, чтобы селект "Подать заявку" стал (не)активным
+        await resend_panel(interaction.guild, interaction.client.user, "tickets")
         await interaction.followup.send(
             "✅ Набор в семью открыт" if new_state else "✅ Набор в семью закрыт", ephemeral=True
         )
@@ -456,9 +486,7 @@ class AdminPanelView(discord.ui.View):
             await interaction.response.send_message("нет прав", ephemeral=True)
             return
         await interaction.response.send_message(
-            f"**Категории личных каналов:**\n\n{build_categories_text(interaction.guild)}\n\n"
-            "Если категория тира заполнена (50/50), бот сам создаст новую с суффиксом `#2` и впишет её сюда — "
-            "но можно и вручную добавить готовую категорию кнопкой ниже.",
+            embed=build_categories_embed(interaction.guild),
             view=GeneralSettingsView(guild=interaction.guild),
             ephemeral=True,
         )
