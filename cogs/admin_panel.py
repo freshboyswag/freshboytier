@@ -31,24 +31,37 @@ def has_quota_reset_access(member: discord.Member) -> bool:
 
 
 def get_panel_registry():
-    """Лениво импортирует, чтобы не ловить циклический импорт когов."""
-    from cogs.channels import PanelView, build_panel_embed
-    from cogs.tickets import TicketPanelView, build_ticket_panel_embed
+    """Лениво импортирует, чтобы не ловить циклический импорт когов.
+    Кортеж: (channel_id, embed_fn, view_cls, label, default_image_url)."""
+    from cogs.channels import PanelView, build_panel_embed, DEFAULT_PANEL_IMAGE
+    from cogs.tickets import TicketPanelView, build_ticket_panel_embed, DEFAULT_TICKET_IMAGE
     from cogs.vacation import VacationPanelView, build_vacation_panel_embed
     from cogs.members import DatabasePanelView, build_database_embed
 
     return {
-        "private":  (PANEL_CHANNEL_ID, build_panel_embed, PanelView, "Панель личных каналов"),
-        "tickets":  (TICKETS_CHANNEL_ID, build_ticket_panel_embed, TicketPanelView, "Панель заявок"),
-        "otpusk":   (VACATION_CHANNEL_ID, build_vacation_panel_embed, VacationPanelView, "Панель отпусков"),
-        "database": (DATABASE_CHANNEL_ID, build_database_embed, DatabasePanelView, "Панель базы участников"),
+        "private":  (PANEL_CHANNEL_ID, build_panel_embed, PanelView, "Панель личных каналов", DEFAULT_PANEL_IMAGE),
+        "tickets":  (TICKETS_CHANNEL_ID, build_ticket_panel_embed, TicketPanelView, "Панель заявок", DEFAULT_TICKET_IMAGE),
+        "otpusk":   (VACATION_CHANNEL_ID, build_vacation_panel_embed, VacationPanelView, "Панель отпусков", None),
+        "database": (DATABASE_CHANNEL_ID, build_database_embed, DatabasePanelView, "Панель базы участников", None),
     }
 
 
-async def resend_panel(guild: discord.Guild, bot_user: discord.ClientUser, panel_key: str) -> bool:
-    """Удаляет старые сообщения бота в канале панели и постит свежий эмбед."""
+def get_panel_image_url(panel_key: str) -> str:
+    """Текущая картинка панели: оверрайд из базы, если задан, иначе дефолт из кода."""
     registry = get_panel_registry()
-    channel_id, embed_fn, view_cls, _ = registry[panel_key]
+    _, _, _, _, default_image_url = registry[panel_key]
+    override = get_panel_override(panel_key)
+    if override and override.get("image_url"):
+        return override["image_url"]
+    return default_image_url
+
+
+async def resend_panel(guild: discord.Guild, bot_user: discord.ClientUser, panel_key: str) -> bool:
+    """Удаляет старые сообщения бота в канале панели и постит свежий эмбед.
+    Если у панели есть картинка — шлёт её отдельным эмбедом-баннером СВЕРХУ,
+    а текст с кнопками/селектом — отдельным эмбедом под ним в том же сообщении."""
+    registry = get_panel_registry()
+    channel_id, embed_fn, view_cls, _, _ = registry[panel_key]
     channel = guild.get_channel(channel_id)
     if not channel:
         return False
@@ -57,7 +70,17 @@ async def resend_panel(guild: discord.Guild, bot_user: discord.ClientUser, panel
         if message.author == bot_user:
             await message.delete()
 
-    await channel.send(embed=embed_fn(), view=view_cls())
+    content_embed = embed_fn()
+    image_url = get_panel_image_url(panel_key)
+
+    embeds = []
+    if image_url:
+        banner_embed = discord.Embed(color=content_embed.color)
+        banner_embed.set_image(url=image_url)
+        embeds.append(banner_embed)
+    embeds.append(content_embed)
+
+    await channel.send(embeds=embeds, view=view_cls())
     return True
 
 
@@ -94,7 +117,8 @@ def build_admin_panel_embed() -> discord.Embed:
 # ───────────────────────────────────────────────
 
 class EditPanelModal(discord.ui.Modal):
-    def __init__(self, panel_key: str, panel_label: str, current_title: str, current_description: str):
+    def __init__(self, panel_key: str, panel_label: str, current_title: str, current_description: str,
+                 current_image_url: str = None):
         super().__init__(title=f"Редактирование: {panel_label}"[:45])
         self.panel_key = panel_key
 
@@ -112,13 +136,29 @@ class EditPanelModal(discord.ui.Modal):
             max_length=4000,
             required=True,
         )
+        self.image_url_input = discord.ui.TextInput(
+            label="Ссылка на картинку (баннер сверху)",
+            style=discord.TextStyle.short,
+            default=current_image_url or "",
+            placeholder="пусто = картинка по умолчанию из кода",
+            max_length=500,
+            required=False,
+        )
         self.add_item(self.title_input)
         self.add_item(self.description_input)
+        self.add_item(self.image_url_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
-        set_panel_override(self.panel_key, self.title_input.value, self.description_input.value)
+        image_url = self.image_url_input.value.strip() or None
+        if image_url and not image_url.startswith(("http://", "https://")):
+            await interaction.followup.send(
+                "ссылка на картинку должна начинаться с http:// или https://", ephemeral=True
+            )
+            return
+
+        set_panel_override(self.panel_key, self.title_input.value, self.description_input.value, image_url)
 
         ok = await resend_panel(interaction.guild, interaction.client.user, self.panel_key)
 
@@ -219,14 +259,16 @@ class EditPanelChoiceView(discord.ui.View):
                 await interaction.response.send_message("нет прав", ephemeral=True)
                 return
             registry = get_panel_registry()
-            _, embed_fn, _, label = registry[key]
-            current_embed = embed_fn()  # уже учитывает существующий оверрайд, если он был
+            _, embed_fn, _, label, _ = registry[key]
+            current_embed = embed_fn()  # уже учитывает существующий оверрайд текста, если он был
+            current_image_url = get_panel_image_url(key)  # оверрайд картинки, если был, иначе дефолт из кода
             await interaction.response.send_modal(
                 EditPanelModal(
                     panel_key=key,
                     panel_label=label,
                     current_title=current_embed.title,
                     current_description=current_embed.description,
+                    current_image_url=current_image_url,
                 )
             )
         return callback
