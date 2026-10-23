@@ -346,7 +346,7 @@ def build_ticket_panel_embed() -> discord.Embed:
         "**Все поля обязательны для заполнения.** Заявки, заполненные не по форме, будут закрыты сразу.\n\n"
         "**Заявки без откатов будут закрыты** — писать «покажу на демке», «кину позже» не нужно. "
         "**Откаты с гг должны быть не старше 2 недель.**\n\n"
-        "**Тикеты рассматриваются в течение 48 часов.**"
+        "> Тикеты рассматриваются в течение 48 часов."
     )
 
     embed = discord.Embed(
@@ -354,8 +354,11 @@ def build_ticket_panel_embed() -> discord.Embed:
         description=override["description"] if override else default_description,
         color=0x2b2d31
     )
-    embed.set_image(url="https://media.discordapp.net/attachments/1523386915582378004/1523425736877281411/tickets.png?ex=6a4c1047&is=6a4abec7&hm=22b4f72a2e207e4af05c556d7a2ab723c7c47bfa0a6bfc78c5e39bb652c67a09&=&format=webp&quality=lossless&width=1303&height=977")
     return embed
+
+
+# картинка-баннер по умолчанию (теперь отдельным эмбедом сверху, см. admin_panel.py resend_panel)
+DEFAULT_TICKET_IMAGE = "https://media.discordapp.net/attachments/1523386915582378004/1523425736877281411/tickets.png?ex=6a4c1047&is=6a4abec7&hm=22b4f72a2e207e4af05c556d7a2ab723c7c47bfa0a6bfc78c5e39bb652c67a09&=&format=webp&quality=lossless&width=1303&height=977"
 
 
 # ───────────────────────────────────────────────
