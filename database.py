@@ -47,23 +47,28 @@ def get_category_pool_collection():
 # ───────────────────────────────────────────────
 
 def get_panel_override(panel_key: str):
-    """Возвращает {"title": ..., "description": ...} если панель редактировали, иначе None."""
+    """Возвращает {"title": ..., "description": ..., "image_url": ...} если панель редактировали, иначе None.
+    image_url может отсутствовать/быть None — тогда используется картинка по умолчанию."""
     try:
         col = get_settings_collection()
         doc = col.find_one({"_id": f"panel_override_{panel_key}"})
         if doc:
-            return {"title": doc.get("title"), "description": doc.get("description")}
+            return {
+                "title": doc.get("title"),
+                "description": doc.get("description"),
+                "image_url": doc.get("image_url"),
+            }
         return None
     except Exception as e:
         print(f"[ERROR] get_panel_override: {e}")
         return None
 
-def set_panel_override(panel_key: str, title: str, description: str):
+def set_panel_override(panel_key: str, title: str, description: str, image_url: str = None):
     try:
         col = get_settings_collection()
         col.update_one(
             {"_id": f"panel_override_{panel_key}"},
-            {"$set": {"title": title, "description": description}},
+            {"$set": {"title": title, "description": description, "image_url": image_url}},
             upsert=True
         )
     except Exception as e:
