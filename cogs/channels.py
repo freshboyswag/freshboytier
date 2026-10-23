@@ -141,8 +141,10 @@ def build_panel_embed() -> discord.Embed:
         description=override["description"] if override else default_description,
         color=0x1ABC9C
     )
-    embed.set_image(url="https://cdn.discordapp.com/attachments/1510631159414128700/1510639319969304646/0531.gif")
     return embed
+
+
+DEFAULT_PANEL_IMAGE = "https://cdn.discordapp.com/attachments/1510631159414128700/1510639319969304646/0531.gif"
 
 
 # ───────────────────────────────────────────────
