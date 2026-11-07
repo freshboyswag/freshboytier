@@ -545,6 +545,7 @@ class AdminPanelCog(commands.Cog):
                     await message.delete()
 
             await channel.send(embed=build_admin_panel_embed(guild), view=AdminPanelView())
+            await resend_ticket_panel(guild, self.bot.user)
             self._panel_posted_this_run = True
             return
 
