@@ -284,8 +284,7 @@ class TicketActionsView(View):
         await channel.set_permissions(interaction.user, view_channel=True, send_messages=True)
 
         await channel.send(
-            f"{interaction.user.mention} взял заявку на рассмотрение — "
-            f"доступ к каналу теперь только у него и у автора заявки"
+            f"{interaction.user.mention} взял заявку на рассмотрение"
         )
 
     @discord.ui.button(label="Вызвать на обзвон", style=discord.ButtonStyle.blurple, custom_id="ticket_call")
