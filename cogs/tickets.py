@@ -263,7 +263,30 @@ class TicketActionsView(View):
             await interaction.response.send_message("нет прав", ephemeral=True)
             return
         await interaction.response.defer()
-        await interaction.channel.send(f"{interaction.user.mention} начал рассмотрение заявки")
+
+        settings = get_ticket_settings()
+        guild = interaction.guild
+        channel = interaction.channel
+
+        # сносим обе роли (пинг + доступ) из прав именно этого канала — не трогая
+        # сами роли на сервере. Независимо от ролей в будущем, остаётся только
+        # тот, кто явно получил персональный доступ ниже.
+        role_ids = set(settings.get("ping_role_ids", [])) | set(settings.get("access_role_ids", []))
+        for role_id in role_ids:
+            role = guild.get_role(role_id)
+            if role:
+                try:
+                    await channel.set_permissions(role, overwrite=None)
+                except discord.HTTPException:
+                    pass
+
+        # инициатор уже имеет персональный доступ с момента создания канала — не трогаем
+        await channel.set_permissions(interaction.user, view_channel=True, send_messages=True)
+
+        await channel.send(
+            f"{interaction.user.mention} взял заявку на рассмотрение — "
+            f"доступ к каналу теперь только у него и у автора заявки"
+        )
 
     @discord.ui.button(label="Вызвать на обзвон", style=discord.ButtonStyle.blurple, custom_id="ticket_call")
     async def call(self, interaction: discord.Interaction, button: discord.ui.Button):
