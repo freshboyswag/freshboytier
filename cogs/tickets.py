@@ -339,21 +339,37 @@ class TicketActionsView(View):
 # Панель подачи заявки
 # ───────────────────────────────────────────────
 
-class TicketPanelView(View):
+class TicketPanelLayout(discord.ui.LayoutView):
+    """Components V2: картинка, текст и меню подачи заявки в одном непрерывном контейнере
+    (в отличие от двух обычных embed'ов тут реально нет шва между картинкой и текстом)."""
+
     def __init__(self):
         super().__init__(timeout=None)
-        if not is_recruitment_open():
-            for item in self.children:
-                if isinstance(item, discord.ui.Select):
-                    item.disabled = True
-                    item.placeholder = "Набор закрыт"
+        settings = get_ticket_settings()
+        open_now = is_recruitment_open()
 
-    @discord.ui.select(
-        placeholder="Выбери действие...",
-        custom_id="submit_ticket_select",
-        options=[discord.SelectOption(label="Подать заявку", value="submit_ticket", emoji="📩")],
-    )
-    async def submit_ticket(self, interaction: discord.Interaction, select: discord.ui.Select):
+        container = discord.ui.Container(accent_colour=discord.Colour(0x2b2d31))
+
+        image_url = settings.get("panel_image_url")
+        if image_url:
+            container.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=image_url)))
+
+        title = settings.get("panel_title") or ""
+        description = settings.get("panel_description") or ""
+        container.add_item(discord.ui.TextDisplay(f"## {title}\n\n{description}"))
+
+        select = discord.ui.Select(
+            placeholder="Выбери действие..." if open_now else "Набор закрыт",
+            custom_id="submit_ticket_select",
+            options=[discord.SelectOption(label="Подать заявку", value="submit_ticket", emoji="📩")],
+            disabled=not open_now,
+        )
+        select.callback = self._on_submit_select
+        container.add_item(discord.ui.ActionRow(select))
+
+        self.add_item(container)
+
+    async def _on_submit_select(self, interaction: discord.Interaction):
         if not is_recruitment_open():
             await interaction.response.send_message("❌ набор в семью сейчас закрыт, попробуй позже", ephemeral=True)
             return
@@ -362,19 +378,13 @@ class TicketPanelView(View):
         # сбрасываем визуально выбранный пункт селекта, иначе после закрытия формы
         # без отправки клиент не даёт выбрать тот же пункт снова
         try:
-            await interaction.message.edit(view=TicketPanelView())
+            await interaction.message.edit(view=TicketPanelLayout())
         except discord.HTTPException:
             pass
 
 
-def build_ticket_panel_embed() -> discord.Embed:
-    settings = get_ticket_settings()
-    embed = discord.Embed(
-        title=settings.get("panel_title"),
-        description=settings.get("panel_description"),
-        color=0x2b2d31,
-    )
-    return embed
+# оставлено для обратной совместимости с тем, что ещё может ссылаться на старое имя
+TicketPanelView = TicketPanelLayout
 
 
 # ───────────────────────────────────────────────
