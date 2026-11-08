@@ -44,6 +44,7 @@ _DEFAULTS = {
     "channel_accepted_logs": config.DEFAULT_CHANNEL_ACCEPTED_LOGS,
     "channel_rejected_logs": config.DEFAULT_CHANNEL_REJECTED_LOGS,
     "channel_call": config.DEFAULT_CHANNEL_CALL,
+    "ticket_panel_message_id": None,  # id сообщения с панелью заявок — чтобы редактировать его на месте при тоггле набора
 }
 
 
