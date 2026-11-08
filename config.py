@@ -51,9 +51,9 @@ DEFAULT_PANEL_DESCRIPTION = (
     "> Тикеты рассматриваются в течение 48 часов."
 )
 DEFAULT_PANEL_IMAGE = (
-    "https://media.discordapp.net/attachments/1523386915582378004/1523425736877281411/"
-    "tickets.png?ex=6a4c1047&is=6a4abec7&hm=22b4f72a2e207e4af05c556d7a2ab723c7c47bfa0a6bfc78c5e39bb652c67a09"
-    "&=&format=webp&quality=lossless&width=1303&height=977"
+    "https://media.discordapp.net/attachments/1485076970592272514/1566062009026486282/"
+    "ima12322ge.gif?ex=6af066e6&is=6aef1566&hm=d5e826aa1a72014c609085dcd4cdcd1727b17e47707d02069b0625609c11bb1a"
+    "&=&width=384&height=159"
 )
 
 DEFAULT_FIELDS = [
