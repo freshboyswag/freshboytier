@@ -26,15 +26,10 @@ async def resend_ticket_panel(guild: discord.Guild, bot_user: discord.ClientUser
 
     content_embed = build_ticket_panel_embed()
     image_url = settings.get("panel_image_url")
-
-    embeds = []
     if image_url:
-        banner_embed = discord.Embed(color=content_embed.color)
-        banner_embed.set_image(url=image_url)
-        embeds.append(banner_embed)
-    embeds.append(content_embed)
+        content_embed.set_image(url=image_url)
 
-    msg = await channel.send(embeds=embeds, view=TicketPanelView())
+    msg = await channel.send(embed=content_embed, view=TicketPanelView())
     update_ticket_settings(ticket_panel_message_id=msg.id)
     return True
 
