@@ -34,7 +34,7 @@ DEFAULT_ACCESS_ROLE_IDS = [
     1523386914525286511,  # босс
 ]
 
-DEFAULT_CHANNEL_TICKETS       = 1523386915288780843  # панелька с кнопкой "подать заявку"
+DEFAULT_CHANNEL_TICKETS       = 1540322040844652654  # панелька с кнопкой "подать заявку"
 DEFAULT_CHANNEL_CATEGORY      = 1523386915863269483  # категория для создаваемых каналов с тикетами
 DEFAULT_CHANNEL_RESULTS       = 1523386915288780844  # результаты заявок + приглашение на обзвон
 DEFAULT_CHANNEL_ACCEPTED_LOGS = 1523386915582378012
