@@ -7,7 +7,7 @@ from database import (
     get_ticket_settings, update_ticket_settings,
     is_recruitment_open, set_recruitment_open,
 )
-from cogs.tickets import has_ticket_access, TicketPanelView, build_ticket_panel_embed
+from cogs.tickets import has_ticket_access, TicketPanelLayout
 
 
 # ═══════════════════════════════════════════════
@@ -24,12 +24,7 @@ async def resend_ticket_panel(guild: discord.Guild, bot_user: discord.ClientUser
         if message.author == bot_user:
             await message.delete()
 
-    content_embed = build_ticket_panel_embed()
-    image_url = settings.get("panel_image_url")
-    if image_url:
-        content_embed.set_image(url=image_url)
-
-    msg = await channel.send(embed=content_embed, view=TicketPanelView())
+    msg = await channel.send(view=TicketPanelLayout())
     update_ticket_settings(ticket_panel_message_id=msg.id)
     return True
 
@@ -418,7 +413,7 @@ class AdminPanelView(View):
         if channel and msg_id:
             try:
                 msg = await channel.fetch_message(int(msg_id))
-                await msg.edit(view=TicketPanelView())
+                await msg.edit(view=TicketPanelLayout())
             except (discord.NotFound, discord.HTTPException):
                 pass
 
