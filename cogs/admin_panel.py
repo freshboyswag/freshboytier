@@ -1,5 +1,3 @@
-import uuid
-
 import discord
 from discord.ext import commands
 from discord.ui import Modal, TextInput, View
@@ -8,23 +6,13 @@ from config import ADMIN_PANEL_CHANNEL_ID
 from database import (
     get_ticket_settings, update_ticket_settings,
     is_recruitment_open, set_recruitment_open,
-    get_tickets_collection,
 )
 from cogs.tickets import has_ticket_access, TicketPanelView, build_ticket_panel_embed
 
 
-def ro(ids):
-    """role ids -> ролевые упоминания для текста"""
-    return ", ".join(f"<@&{i}>" for i in ids) if ids else "—"
-
-
-def co(ids):
-    return ", ".join(f"<#{i}>" for i in ids) if ids else "—"
-
-
-# ───────────────────────────────────────────────
+# ═══════════════════════════════════════════════
 # Пересылка панели заявок в её канал
-# ───────────────────────────────────────────────
+# ═══════════════════════════════════════════════
 
 async def resend_ticket_panel(guild: discord.Guild, bot_user: discord.ClientUser) -> bool:
     settings = get_ticket_settings()
@@ -46,45 +34,26 @@ async def resend_ticket_panel(guild: discord.Guild, bot_user: discord.ClientUser
         embeds.append(banner_embed)
     embeds.append(content_embed)
 
-    await channel.send(embeds=embeds, view=TicketPanelView())
+    msg = await channel.send(embeds=embeds, view=TicketPanelView())
+    update_ticket_settings(ticket_panel_message_id=msg.id)
     return True
 
 
-# ───────────────────────────────────────────────
+# ═══════════════════════════════════════════════
 # Главный эмбед админ-панели
-# ───────────────────────────────────────────────
+# ═══════════════════════════════════════════════
 
-def build_admin_panel_embed(guild: discord.Guild) -> discord.Embed:
-    settings = get_ticket_settings()
+def build_admin_panel_embed() -> discord.Embed:
     open_now = is_recruitment_open()
-
-    try:
-        open_tickets = get_tickets_collection().count_documents({})
-    except Exception:
-        open_tickets = "—"
-
-    embed = discord.Embed(
+    return discord.Embed(
         title="⚙️ Админ-панель заявок",
-        description=(
-            f"## Набор в семью: {'🟢 Открыт' if open_now else '🔴 Закрыт'}\n"
-            f"Открытых заявок сейчас: **{open_tickets}**"
-        ),
+        description=f"## Набор в семью: {'🟢 Открыт' if open_now else '🔴 Закрыт'}",
         color=0x57F287 if open_now else 0xED4245,
     )
-    embed.add_field(name="📩 Канал заявки", value=co([settings["channel_tickets"]]), inline=True)
-    embed.add_field(name="🗂️ Категория тикетов", value=co([settings["channel_category"]]), inline=True)
-    embed.add_field(name="📨 Результаты", value=co([settings["channel_results"]]), inline=True)
-    embed.add_field(name="✅ Лог принятых", value=co([settings["channel_accepted_logs"]]), inline=True)
-    embed.add_field(name="❌ Лог отклонённых", value=co([settings["channel_rejected_logs"]]), inline=True)
-    embed.add_field(name="🎙️ Канал обзвона", value=co([settings["channel_call"]]), inline=True)
-    embed.add_field(name="📣 Роли для пинга", value=ro(settings["ping_role_ids"]), inline=False)
-    embed.add_field(name="🔑 Роли с доступом", value=ro(settings["access_role_ids"]), inline=False)
-    embed.set_footer(text=f"Полей в форме заявки: {len(settings.get('fields', []))}/5")
-    return embed
 
 
 # ═══════════════════════════════════════════════
-# Редактирование текста/картинки/канала панели заявок
+# Панель заявок: текст / картинка
 # ═══════════════════════════════════════════════
 
 class EditPanelModal(Modal, title="Текст панели заявок"):
@@ -105,7 +74,7 @@ class EditPanelModal(Modal, title="Текст панели заявок"):
             required=True,
         )
         self.image_url_input = TextInput(
-            label="Ссылка на картинку (баннер сверху)",
+            label="Ссылка на фотку",
             style=discord.TextStyle.short,
             default=settings.get("panel_image_url") or "",
             placeholder="пусто — без картинки",
@@ -128,80 +97,91 @@ class EditPanelModal(Modal, title="Текст панели заявок"):
             panel_description=self.description_input.value,
             panel_image_url=image_url,
         )
-        ok = await resend_ticket_panel(interaction.guild, interaction.client.user)
-        if ok:
-            await interaction.followup.send("✅ Панель заявок обновлена и переотправлена в канал", ephemeral=True)
-        else:
-            await interaction.followup.send("⚠️ Текст сохранён, но канал панели не найден — укажи его селектом ниже", ephemeral=True)
-
-
-class PanelChannelSelect(discord.ui.ChannelSelect):
-    def __init__(self, current_id: int):
-        super().__init__(
-            placeholder="Канал, где висит панель 'Подать заявку'",
-            channel_types=[discord.ChannelType.text],
-            default_values=[discord.Object(id=current_id, type=discord.TextChannel)] if current_id else [],
-            row=0,
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        update_ticket_settings(channel_tickets=self.values[0].id)
-        await interaction.response.send_message(
-            f"✅ канал панели заявок теперь {self.values[0].mention}. Нажми «Переслать заново», чтобы запостить её там.",
-            ephemeral=True,
+        await interaction.followup.send(
+            "✅ текст сохранён. Нажми «Переотправить», чтобы обновить панель в канале.", ephemeral=True
         )
 
 
 class PanelMenuView(View):
-    def __init__(self, settings: dict):
-        super().__init__(timeout=180)
-        self.add_item(PanelChannelSelect(settings.get("channel_tickets")))
+    def __init__(self):
+        super().__init__(timeout=None)
 
-    @discord.ui.button(label="✏️ Изменить текст и картинку", style=discord.ButtonStyle.blurple, row=1)
+    @discord.ui.button(label="✏️ Текст и фотка", style=discord.ButtonStyle.blurple, row=0)
     async def edit_text(self, interaction: discord.Interaction, button: discord.ui.Button):
         settings = get_ticket_settings()
         await interaction.response.send_modal(EditPanelModal(settings))
 
-    @discord.ui.button(label="📤 Переслать заново", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="📝 Поля формы", style=discord.ButtonStyle.blurple, row=0)
+    async def fields(self, interaction: discord.Interaction, button: discord.ui.Button):
+        settings = get_ticket_settings()
+        await interaction.response.send_message(
+            embed=build_fields_embed(settings), view=FieldsMenuView(settings), ephemeral=True
+        )
+
+    @discord.ui.button(label="📤 Переотправить", style=discord.ButtonStyle.secondary, row=0)
     async def resend(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         ok = await resend_ticket_panel(interaction.guild, interaction.client.user)
-        await interaction.followup.send("✅ переслано" if ok else "⚠️ канал панели не найден", ephemeral=True)
+        await interaction.followup.send("✅ переслано" if ok else "⚠️ канал панели заявок не найден", ephemeral=True)
 
 
 # ═══════════════════════════════════════════════
-# Конструктор полей заявки
+# Поля заявки — 5 фиксированных слотов.
+# Если у поля пустой заголовок — оно считается выключенным
+# и не показывается в форме, но остаётся видно в админке.
 # ═══════════════════════════════════════════════
 
-def _field_summary(field: dict) -> str:
+def _field_line(field: dict) -> str:
+    if not field.get("label"):
+        return "— поле отключено (нет текста) —"
     kind = "многострочное" if field.get("style") == "paragraph" else "однострочное"
     req = "обязательное" if field.get("required", True) else "необязательное"
-    return (
-        f"**{field['label']}**\n"
-        f"placeholder: `{field.get('placeholder') or '—'}` · {kind}, {req}, лимит {field.get('max_length', 100)} симв."
-    )
+    return f"пример: `{field.get('placeholder') or '—'}` · {kind}, {req}, лимит {field.get('max_length', 100)} символов"
 
 
 def build_fields_embed(settings: dict) -> discord.Embed:
-    embed = discord.Embed(title="📝 Поля заявки", color=0x2b2d31,
-                           description="Поля, которые видит пользователь при подаче заявки (макс. 5 — ограничение Discord).")
-    fields = settings.get("fields", [])
-    if not fields:
-        embed.add_field(name="пусто", value="полей пока нет", inline=False)
-    for i, field in enumerate(fields, start=1):
-        embed.add_field(name=f"{i}.", value=_field_summary(field), inline=False)
+    embed = discord.Embed(title="Поля заявки", color=0x2b2d31)
+    for i, field in enumerate(settings.get("fields", []), start=1):
+        name = f"{i}. {field['label']}" if field.get("label") else f"{i}. (отключено)"
+        embed.add_field(name=name, value=_field_line(field), inline=False)
     return embed
 
 
-class AddFieldModal(Modal, title="Новое поле заявки"):
-    def __init__(self, style: str):
+def build_field_detail_embed(field: dict) -> discord.Embed:
+    if not field.get("label"):
+        return discord.Embed(
+            title="(поле отключено)",
+            description="Заголовок пуст — поле не показывается в форме заявки.\nНажми «Текст», чтобы вписать заголовок и включить его обратно.",
+            color=0x2b2d31,
+        )
+    embed = discord.Embed(title=field["label"], description=_field_line(field), color=0x2b2d31)
+    return embed
+
+
+class EditFieldModal(Modal, title="Текст поля"):
+    def __init__(self, field: dict, origin_interaction: discord.Interaction):
         super().__init__()
-        self.style = style
-        self.label_input = TextInput(label="Заголовок поля", style=discord.TextStyle.short, max_length=45, required=True)
-        self.placeholder_input = TextInput(label="Пример (placeholder)", style=discord.TextStyle.short, max_length=100, required=False)
+        self.field_id = field["id"]
+        self.origin_interaction = origin_interaction
+        self.label_input = TextInput(
+            label="Заголовок (пусто — выключить поле)",
+            style=discord.TextStyle.short,
+            default=field.get("label", ""),
+            max_length=45,
+            required=False,
+        )
+        self.placeholder_input = TextInput(
+            label="Пример (placeholder)",
+            style=discord.TextStyle.short,
+            default=field.get("placeholder", ""),
+            max_length=100,
+            required=False,
+        )
         self.max_length_input = TextInput(
-            label="Лимит символов (число)", style=discord.TextStyle.short, required=False,
-            default="1000" if style == "paragraph" else "100",
+            label="Лимит символов (число)",
+            style=discord.TextStyle.short,
+            default=str(field.get("max_length", 100)),
+            required=False,
         )
         self.add_item(self.label_input)
         self.add_item(self.placeholder_input)
@@ -210,242 +190,189 @@ class AddFieldModal(Modal, title="Новое поле заявки"):
     async def on_submit(self, interaction: discord.Interaction):
         settings = get_ticket_settings()
         fields = settings.get("fields", [])
-        if len(fields) >= 5:
-            await interaction.response.send_message("⚠️ больше 5 полей нельзя — это лимит модалок Discord", ephemeral=True)
-            return
-
+        updated = None
         try:
-            max_length = int(self.max_length_input.value) if self.max_length_input.value.strip() else (1000 if self.style == "paragraph" else 100)
-            max_length = max(1, min(max_length, 1024))
-        except ValueError:
-            max_length = 1000 if self.style == "paragraph" else 100
-
-        fields.append({
-            "id": uuid.uuid4().hex[:8],
-            "label": self.label_input.value,
-            "placeholder": self.placeholder_input.value or "",
-            "style": self.style,
-            "max_length": max_length,
-            "required": True,
-        })
-        update_ticket_settings(fields=fields)
-        await interaction.response.send_message(f"✅ поле «{self.label_input.value}» добавлено", ephemeral=True)
-
-
-class EditFieldModal(Modal, title="Редактирование поля"):
-    def __init__(self, field: dict):
-        super().__init__()
-        self.field_id = field["id"]
-        self.label_input = TextInput(label="Заголовок поля", style=discord.TextStyle.short, max_length=45,
-                                      default=field["label"], required=True)
-        self.placeholder_input = TextInput(label="Пример (placeholder)", style=discord.TextStyle.short, max_length=100,
-                                            default=field.get("placeholder", ""), required=False)
-        self.max_length_input = TextInput(label="Лимит символов (число)", style=discord.TextStyle.short,
-                                           default=str(field.get("max_length", 100)), required=False)
-        self.add_item(self.label_input)
-        self.add_item(self.placeholder_input)
-        self.add_item(self.max_length_input)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        settings = get_ticket_settings()
-        fields = settings.get("fields", [])
-        try:
-            max_length = max(1, min(int(self.max_length_input.value), 1024))
+            max_length = max(1, min(int(self.max_length_input.value), 1024)) if self.max_length_input.value.strip() else 100
         except ValueError:
             max_length = 100
 
         for f in fields:
             if f["id"] == self.field_id:
-                f["label"] = self.label_input.value
-                f["placeholder"] = self.placeholder_input.value or ""
+                f["label"] = self.label_input.value.strip()
+                f["placeholder"] = self.placeholder_input.value.strip()
                 f["max_length"] = max_length
+                updated = f
         update_ticket_settings(fields=fields)
-        await interaction.response.send_message("✅ поле обновлено", ephemeral=True)
+
+        if updated:
+            try:
+                await self.origin_interaction.edit_original_response(
+                    embed=build_field_detail_embed(updated), view=FieldActionView(updated)
+                )
+            except discord.HTTPException:
+                pass
+        await interaction.response.defer()
 
 
 class FieldActionView(View):
     def __init__(self, field: dict):
-        super().__init__(timeout=180)
+        super().__init__(timeout=None)
         self.field = field
 
-    @discord.ui.button(label="✏️ Текст", style=discord.ButtonStyle.blurple)
-    async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(EditFieldModal(self.field))
+        edit_btn = discord.ui.Button(label="✏️ Текст", style=discord.ButtonStyle.blurple, row=0)
+        edit_btn.callback = self.edit_text
+        self.add_item(edit_btn)
 
-    @discord.ui.button(label="🔁 Сменить тип (одна строка / абзац)", style=discord.ButtonStyle.secondary)
-    async def toggle_style(self, interaction: discord.Interaction, button: discord.ui.Button):
+        style_btn = discord.ui.Button(label="🔁 Одна строка / абзац", style=discord.ButtonStyle.blurple, row=0)
+        style_btn.callback = self.toggle_style
+        self.add_item(style_btn)
+
+        required_btn = discord.ui.Button(
+            label="❗ Обязательное/необязательное",
+            style=discord.ButtonStyle.red if field.get("required", True) else discord.ButtonStyle.blurple,
+            row=0,
+        )
+        required_btn.callback = self.toggle_required
+        self.add_item(required_btn)
+
+    def _save_and_get(self, mutate) -> dict:
         settings = get_ticket_settings()
         fields = settings.get("fields", [])
+        updated = self.field
         for f in fields:
             if f["id"] == self.field["id"]:
-                f["style"] = "short" if f.get("style") == "paragraph" else "paragraph"
-                new_style = f["style"]
+                mutate(f)
+                updated = f
         update_ticket_settings(fields=fields)
-        await interaction.response.send_message(f"✅ тип поля теперь: {new_style}", ephemeral=True)
+        return updated
 
-    @discord.ui.button(label="❗ Обязательное/необязательное", style=discord.ButtonStyle.secondary)
-    async def toggle_required(self, interaction: discord.Interaction, button: discord.ui.Button):
-        settings = get_ticket_settings()
-        fields = settings.get("fields", [])
-        for f in fields:
-            if f["id"] == self.field["id"]:
-                f["required"] = not f.get("required", True)
-                new_req = f["required"]
-        update_ticket_settings(fields=fields)
-        await interaction.response.send_message(f"✅ теперь поле {'обязательное' if new_req else 'необязательное'}", ephemeral=True)
+    async def edit_text(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(EditFieldModal(self.field, origin_interaction=interaction))
 
-    @discord.ui.button(label="🗑 Удалить поле", style=discord.ButtonStyle.red)
-    async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
-        settings = get_ticket_settings()
-        fields = [f for f in settings.get("fields", []) if f["id"] != self.field["id"]]
-        update_ticket_settings(fields=fields)
-        await interaction.response.send_message(f"🗑 поле «{self.field['label']}» удалено", ephemeral=True)
+    async def toggle_style(self, interaction: discord.Interaction):
+        updated = self._save_and_get(
+            lambda f: f.__setitem__("style", "short" if f.get("style") == "paragraph" else "paragraph")
+        )
+        await interaction.response.edit_message(embed=build_field_detail_embed(updated), view=FieldActionView(updated))
+
+    async def toggle_required(self, interaction: discord.Interaction):
+        updated = self._save_and_get(
+            lambda f: f.__setitem__("required", not f.get("required", True))
+        )
+        await interaction.response.edit_message(embed=build_field_detail_embed(updated), view=FieldActionView(updated))
 
 
 class FieldPickSelect(discord.ui.Select):
     def __init__(self, fields: list):
         options = [
-            discord.SelectOption(label=f["label"][:100], value=f["id"],
-                                  description=("многострочное" if f.get("style") == "paragraph" else "одна строка"))
-            for f in fields
-        ] or [discord.SelectOption(label="нет полей", value="none")]
-        super().__init__(placeholder="Выбери поле для редактирования/удаления...", options=options, row=0)
+            discord.SelectOption(
+                label=(f"{i}. {f['label']}" if f.get("label") else f"{i}. (отключено)")[:100],
+                value=f["id"],
+            )
+            for i, f in enumerate(fields, start=1)
+        ]
+        super().__init__(placeholder="Выбери поле для редактирования...", options=options, row=0)
 
     async def callback(self, interaction: discord.Interaction):
-        if self.values[0] == "none":
-            await interaction.response.send_message("полей пока нет, сначала добавь", ephemeral=True)
-            return
         settings = get_ticket_settings()
         field = next((f for f in settings.get("fields", []) if f["id"] == self.values[0]), None)
         if not field:
-            await interaction.response.send_message("поле не найдено (возможно, уже удалено)", ephemeral=True)
+            await interaction.response.send_message("поле не найдено", ephemeral=True)
             return
-        await interaction.response.send_message(
-            embed=discord.Embed(title=field["label"], description=_field_summary(field), color=0x2b2d31),
-            view=FieldActionView(field),
-            ephemeral=True,
-        )
+        await interaction.response.edit_message(embed=build_field_detail_embed(field), view=FieldActionView(field))
 
 
 class FieldsMenuView(View):
     def __init__(self, settings: dict):
-        super().__init__(timeout=180)
+        super().__init__(timeout=None)
         self.add_item(FieldPickSelect(settings.get("fields", [])))
-        self.fields_count = len(settings.get("fields", []))
-
-    @discord.ui.button(label="➕ Короткое поле", style=discord.ButtonStyle.green, row=1)
-    async def add_short(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.fields_count >= 5:
-            await interaction.response.send_message("⚠️ уже максимум 5 полей", ephemeral=True)
-            return
-        await interaction.response.send_modal(AddFieldModal(style="short"))
-
-    @discord.ui.button(label="➕ Многострочное поле", style=discord.ButtonStyle.green, row=1)
-    async def add_paragraph(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.fields_count >= 5:
-            await interaction.response.send_message("⚠️ уже максимум 5 полей", ephemeral=True)
-            return
-        await interaction.response.send_modal(AddFieldModal(style="paragraph"))
 
 
 # ═══════════════════════════════════════════════
-# Роли: пинг и доступ
+# Каналы тикет-системы — одна форма, все айди уже вбиты
 # ═══════════════════════════════════════════════
 
-class RoleSettingSelect(discord.ui.RoleSelect):
-    def __init__(self, setting_key: str, current_ids: list, placeholder: str):
-        super().__init__(
-            placeholder=placeholder,
-            min_values=0,
-            max_values=25,
-            default_values=[discord.Object(id=r, type=discord.Role) for r in current_ids],
+class ChannelsModal(Modal, title="Каналы тикет-системы"):
+    def __init__(self, settings: dict):
+        super().__init__()
+        self.category_input = TextInput(
+            label="Категория тикетов (ID)", style=discord.TextStyle.short,
+            default=str(settings["channel_category"]), max_length=25,
         )
-        self.setting_key = setting_key
+        self.results_input = TextInput(
+            label="Канал результатов (ID)", style=discord.TextStyle.short,
+            default=str(settings["channel_results"]), max_length=25,
+        )
+        self.call_input = TextInput(
+            label="Голосовой канал обзвона (ID)", style=discord.TextStyle.short,
+            default=str(settings["channel_call"]), max_length=25,
+        )
+        self.accepted_input = TextInput(
+            label="Лог принятых заявок (ID)", style=discord.TextStyle.short,
+            default=str(settings["channel_accepted_logs"]), max_length=25,
+        )
+        self.rejected_input = TextInput(
+            label="Лог отклонённых заявок (ID)", style=discord.TextStyle.short,
+            default=str(settings["channel_rejected_logs"]), max_length=25,
+        )
+        for item in (self.category_input, self.results_input, self.call_input, self.accepted_input, self.rejected_input):
+            self.add_item(item)
 
-    async def callback(self, interaction: discord.Interaction):
-        role_ids = [r.id for r in self.values]
-        update_ticket_settings(**{self.setting_key: role_ids})
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            update_ticket_settings(
+                channel_category=int(self.category_input.value.strip()),
+                channel_results=int(self.results_input.value.strip()),
+                channel_call=int(self.call_input.value.strip()),
+                channel_accepted_logs=int(self.accepted_input.value.strip()),
+                channel_rejected_logs=int(self.rejected_input.value.strip()),
+            )
+        except ValueError:
+            await interaction.response.send_message("⚠️ все поля должны быть числовыми ID каналов", ephemeral=True)
+            return
+        await interaction.response.send_message("✅ каналы сохранены", ephemeral=True)
+
+
+# ═══════════════════════════════════════════════
+# Роли тикет-системы — одна форма
+# ═══════════════════════════════════════════════
+
+def _parse_role_ids(raw: str) -> list:
+    ids = []
+    for token in raw.replace(",", " ").split():
+        token = token.strip("<@&> ")
+        if token.isdigit():
+            ids.append(int(token))
+    return ids
+
+
+class RolesModal(Modal, title="Роли тикет-системы"):
+    def __init__(self, settings: dict):
+        super().__init__()
+        self.access_input = TextInput(
+            label="Роли с доступом к тикетам (id через пробел)",
+            style=discord.TextStyle.paragraph,
+            default=" ".join(str(r) for r in settings.get("access_role_ids", [])),
+            required=False,
+            max_length=600,
+        )
+        self.ping_input = TextInput(
+            label="Роли которые будут тегнуты в новом тикете",
+            style=discord.TextStyle.paragraph,
+            default=" ".join(str(r) for r in settings.get("ping_role_ids", [])),
+            required=False,
+            max_length=600,
+        )
+        self.add_item(self.access_input)
+        self.add_item(self.ping_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        access_ids = _parse_role_ids(self.access_input.value)
+        ping_ids = _parse_role_ids(self.ping_input.value)
+        update_ticket_settings(access_role_ids=access_ids, ping_role_ids=ping_ids)
         await interaction.response.send_message(
-            f"✅ сохранено: {ro(role_ids)}" if role_ids else "✅ сохранено: список ролей очищен",
-            ephemeral=True,
+            f"✅ сохранено · доступ: {len(access_ids)} ролей, пинг: {len(ping_ids)} ролей", ephemeral=True
         )
-
-
-class PingRolesView(View):
-    def __init__(self, settings: dict):
-        super().__init__(timeout=180)
-        self.add_item(RoleSettingSelect("ping_role_ids", settings.get("ping_role_ids", []),
-                                         "Роли, которые пингуются в новой заявке"))
-
-
-class AccessRolesView(View):
-    def __init__(self, settings: dict):
-        super().__init__(timeout=180)
-        self.add_item(RoleSettingSelect("access_role_ids", settings.get("access_role_ids", []),
-                                         "Роли с доступом к кнопкам заявки (принять/отклонить/обзвон)"))
-
-
-# ═══════════════════════════════════════════════
-# Каналы тикет-системы
-# ═══════════════════════════════════════════════
-
-_CHANNEL_TYPE_CLASS = {
-    discord.ChannelType.text: discord.TextChannel,
-    discord.ChannelType.category: discord.CategoryChannel,
-    discord.ChannelType.voice: discord.VoiceChannel,
-}
-
-
-class ChannelSettingSelect(discord.ui.ChannelSelect):
-    def __init__(self, setting_key: str, current_id: int, placeholder: str, channel_types, row: int):
-        default_cls = _CHANNEL_TYPE_CLASS.get(channel_types[0], discord.TextChannel)
-        super().__init__(
-            placeholder=placeholder,
-            channel_types=channel_types,
-            default_values=[discord.Object(id=current_id, type=default_cls)] if current_id else [],
-            row=row,
-        )
-        self.setting_key = setting_key
-
-    async def callback(self, interaction: discord.Interaction):
-        update_ticket_settings(**{self.setting_key: self.values[0].id})
-        await interaction.response.send_message(f"✅ сохранено: {self.values[0].mention}", ephemeral=True)
-
-
-class ChannelsMenuView(View):
-    def __init__(self, settings: dict):
-        super().__init__(timeout=180)
-        self.add_item(ChannelSettingSelect("channel_category", settings["channel_category"],
-                                            "🗂️ Категория для каналов с тикетами", [discord.ChannelType.category], row=0))
-        self.add_item(ChannelSettingSelect("channel_results", settings["channel_results"],
-                                            "📨 Канал результатов", [discord.ChannelType.text], row=1))
-        self.add_item(ChannelSettingSelect("channel_call", settings["channel_call"],
-                                            "🎙️ Голосовой канал обзвона", [discord.ChannelType.voice], row=2))
-        self.add_item(ChannelSettingSelect("channel_accepted_logs", settings["channel_accepted_logs"],
-                                            "✅ Канал лога принятых заявок", [discord.ChannelType.text], row=3))
-        self.add_item(ChannelSettingSelect("channel_rejected_logs", settings["channel_rejected_logs"],
-                                            "❌ Канал лога отклонённых заявок", [discord.ChannelType.text], row=4))
-
-
-# ═══════════════════════════════════════════════
-# Статистика
-# ═══════════════════════════════════════════════
-
-def build_stats_embed() -> discord.Embed:
-    try:
-        open_tickets = get_tickets_collection().count_documents({})
-    except Exception:
-        open_tickets = "ошибка"
-
-    settings = get_ticket_settings()
-    embed = discord.Embed(title="📈 Статистика заявок", color=0x3498db)
-    embed.add_field(name="Набор в семью", value="🟢 Открыт" if is_recruitment_open() else "🔴 Закрыт", inline=True)
-    embed.add_field(name="Открытых заявок", value=str(open_tickets), inline=True)
-    embed.add_field(name="Полей в форме", value=f"{len(settings.get('fields', []))}/5", inline=True)
-    embed.add_field(name="Ролей для пинга", value=str(len(settings.get("ping_role_ids", []))), inline=True)
-    embed.add_field(name="Ролей с доступом", value=str(len(settings.get("access_role_ids", []))), inline=True)
-    embed.timestamp = discord.utils.utcnow()
-    return embed
 
 
 # ═══════════════════════════════════════════════
@@ -455,71 +382,77 @@ def build_stats_embed() -> discord.Embed:
 class AdminPanelView(View):
     def __init__(self):
         super().__init__(timeout=None)
+        open_now = is_recruitment_open()
 
-    @discord.ui.button(label="🔁 Открыть/закрыть набор", style=discord.ButtonStyle.green, custom_id="admin_toggle_recruitment", row=0)
-    async def toggle_recruitment(self, interaction: discord.Interaction, button: discord.ui.Button):
+        toggle_btn = discord.ui.Button(
+            label="🟢 Набор открыт" if open_now else "🔴 Набор закрыт",
+            style=discord.ButtonStyle.green if open_now else discord.ButtonStyle.red,
+            custom_id="admin_toggle_recruitment",
+            row=0,
+        )
+        toggle_btn.callback = self.toggle_recruitment
+        self.add_item(toggle_btn)
+
+        panel_btn = discord.ui.Button(label="📋 Панель", style=discord.ButtonStyle.secondary,
+                                       custom_id="admin_open_panel", row=0)
+        panel_btn.callback = self.open_panel_menu
+        self.add_item(panel_btn)
+
+        channels_btn = discord.ui.Button(label="📂 Каналы", style=discord.ButtonStyle.secondary,
+                                          custom_id="admin_channels", row=0)
+        channels_btn.callback = self.open_channels
+        self.add_item(channels_btn)
+
+        roles_btn = discord.ui.Button(label="🔑 Роли", style=discord.ButtonStyle.secondary,
+                                       custom_id="admin_roles", row=0)
+        roles_btn.callback = self.open_roles
+        self.add_item(roles_btn)
+
+    async def toggle_recruitment(self, interaction: discord.Interaction):
         if not has_ticket_access(interaction.user):
             await interaction.response.send_message("нет прав", ephemeral=True)
             return
+
         new_state = not is_recruitment_open()
         set_recruitment_open(new_state)
-        await interaction.response.edit_message(embed=build_admin_panel_embed(interaction.guild), view=AdminPanelView())
-        await resend_ticket_panel(interaction.guild, interaction.client.user)
-        await interaction.followup.send(
-            "✅ набор в семью открыт" if new_state else "✅ набор в семью закрыт", ephemeral=True
-        )
+        await interaction.response.edit_message(embed=build_admin_panel_embed(), view=AdminPanelView())
 
-    @discord.ui.button(label="✏️ Панель заявок", style=discord.ButtonStyle.secondary, custom_id="admin_edit_panel", row=0)
-    async def edit_panel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        settings = get_ticket_settings()
+        channel = interaction.guild.get_channel(settings["channel_tickets"])
+        msg_id = settings.get("ticket_panel_message_id")
+        if channel and msg_id:
+            try:
+                msg = await channel.fetch_message(int(msg_id))
+                await msg.edit(view=TicketPanelView())
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+        await interaction.followup.send("✅ набор открыт" if new_state else "✅ набор закрыт", ephemeral=True)
+
+    async def open_panel_menu(self, interaction: discord.Interaction):
+        if not has_ticket_access(interaction.user):
+            await interaction.response.send_message("нет прав", ephemeral=True)
+            return
+        await interaction.response.send_message("Управление панелью заявок:", view=PanelMenuView(), ephemeral=True)
+
+    async def open_channels(self, interaction: discord.Interaction):
         if not has_ticket_access(interaction.user):
             await interaction.response.send_message("нет прав", ephemeral=True)
             return
         settings = get_ticket_settings()
-        await interaction.response.send_message("Настройки панели заявок:", view=PanelMenuView(settings), ephemeral=True)
+        await interaction.response.send_modal(ChannelsModal(settings))
 
-    @discord.ui.button(label="📈 Статистика", style=discord.ButtonStyle.secondary, custom_id="admin_stats", row=0)
-    async def stats(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not has_ticket_access(interaction.user):
-            await interaction.response.send_message("нет прав", ephemeral=True)
-            return
-        await interaction.response.send_message(embed=build_stats_embed(), ephemeral=True)
-
-    @discord.ui.button(label="📝 Поля заявки", style=discord.ButtonStyle.secondary, custom_id="admin_fields", row=1)
-    async def fields(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def open_roles(self, interaction: discord.Interaction):
         if not has_ticket_access(interaction.user):
             await interaction.response.send_message("нет прав", ephemeral=True)
             return
         settings = get_ticket_settings()
-        await interaction.response.send_message(embed=build_fields_embed(settings), view=FieldsMenuView(settings), ephemeral=True)
-
-    @discord.ui.button(label="📣 Роли для пинга", style=discord.ButtonStyle.secondary, custom_id="admin_ping_roles", row=1)
-    async def ping_roles(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not has_ticket_access(interaction.user):
-            await interaction.response.send_message("нет прав", ephemeral=True)
-            return
-        settings = get_ticket_settings()
-        await interaction.response.send_message("Какие роли пинговать в новой заявке:", view=PingRolesView(settings), ephemeral=True)
-
-    @discord.ui.button(label="🔑 Роли с доступом", style=discord.ButtonStyle.secondary, custom_id="admin_access_roles", row=1)
-    async def access_roles(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not has_ticket_access(interaction.user):
-            await interaction.response.send_message("нет прав", ephemeral=True)
-            return
-        settings = get_ticket_settings()
-        await interaction.response.send_message("Какие роли могут управлять заявками:", view=AccessRolesView(settings), ephemeral=True)
-
-    @discord.ui.button(label="📂 Каналы", style=discord.ButtonStyle.secondary, custom_id="admin_channels", row=2)
-    async def channels(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not has_ticket_access(interaction.user):
-            await interaction.response.send_message("нет прав", ephemeral=True)
-            return
-        settings = get_ticket_settings()
-        await interaction.response.send_message("Каналы тикет-системы:", view=ChannelsMenuView(settings), ephemeral=True)
+        await interaction.response.send_modal(RolesModal(settings))
 
 
-# ───────────────────────────────────────────────
+# ═══════════════════════════════════════════════
 # Ког
-# ───────────────────────────────────────────────
+# ═══════════════════════════════════════════════
 
 class AdminPanelCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -544,8 +477,8 @@ class AdminPanelCog(commands.Cog):
                 if message.author == self.bot.user:
                     await message.delete()
 
-            await channel.send(embed=build_admin_panel_embed(guild), view=AdminPanelView())
-            await resend_ticket_panel(guild, self.bot.user)
+            await channel.send(embed=build_admin_panel_embed(), view=AdminPanelView())
+            # панель заявок при рестарте НЕ трогаем — только админку
             self._panel_posted_this_run = True
             return
 
