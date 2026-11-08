@@ -31,9 +31,10 @@ def _style(field: dict) -> discord.TextStyle:
 class TicketModal(Modal):
     def __init__(self, fields: list):
         super().__init__(title="Подать заявку"[:45])
-        self._field_defs = fields
+        active_fields = [f for f in fields if f.get("label")]  # поля с пустым заголовком — "выключены"
+        self._field_defs = active_fields
         self._inputs = []
-        for field in fields[:5]:  # Discord не даёт больше 5 полей в модалке
+        for field in active_fields[:5]:  # Discord не даёт больше 5 полей в модалке
             text_input = TextInput(
                 label=field["label"][:45],
                 placeholder=field.get("placeholder", "")[:100],
