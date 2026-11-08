@@ -109,67 +109,48 @@ class TicketModal(Modal):
 # Принятие / отклонение
 # ───────────────────────────────────────────────
 
-class AcceptModal(Modal, title="Принятие заявки"):
-    note = TextInput(
-        label="Заметка (необязательно)",
-        style=discord.TextStyle.short,
-        required=False,
-        max_length=300,
-    )
+async def _process_accept(interaction: discord.Interaction, applicant, applicant_name: str,
+                           ticket_channel: discord.TextChannel, ticket_data: dict):
+    settings = get_ticket_settings()
+    guild = interaction.guild
+    results_channel = guild.get_channel(settings["channel_results"])
+    logs_channel = guild.get_channel(settings["channel_accepted_logs"])
 
-    def __init__(self, applicant, applicant_name: str, ticket_channel: discord.TextChannel, ticket_data: dict):
-        super().__init__()
-        self.applicant = applicant
-        self.applicant_name = applicant_name
-        self.ticket_channel = ticket_channel
-        self.ticket_data = ticket_data
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-
-        settings = get_ticket_settings()
-        guild = interaction.guild
-        results_channel = guild.get_channel(settings["channel_results"])
-        logs_channel = guild.get_channel(settings["channel_accepted_logs"])
-
-        results_msg_id = self.ticket_data.get("results_msg_id")
-        if results_msg_id and results_channel:
-            try:
-                msg = await results_channel.fetch_message(int(results_msg_id))
-                await msg.delete()
-            except Exception:
-                pass
-
-        applicant_mention = self.applicant.mention if self.applicant else f"`{self.applicant_name}` (вышел с сервера)"
-
-        embed = discord.Embed(color=0x57f287)
-        embed.description = (
-            f"Заявка пользователя {applicant_mention}\n\n"
-            f"На вступление в семью была принята! 🎉\n"
-            + (f"Заметка: {self.note.value}\n" if self.note.value else "")
-            + f"Рассматривал заявку: {interaction.user.mention}"
-        )
-        if results_channel:
-            await results_channel.send(content=applicant_mention, embed=embed)
-
-        if logs_channel:
-            log_embed = discord.Embed(title="Заявка принята", color=0x57f287)
-            log_embed.add_field(name="Пользователь", value=f"{applicant_mention} (`{self.applicant_name}`)", inline=False)
-            for field in self.ticket_data.get("fields", []):
-                log_embed.add_field(name=field.get("label", "?"), value=field.get("value") or "-", inline=False)
-            if self.note.value:
-                log_embed.add_field(name="Заметка", value=self.note.value, inline=False)
-            log_embed.add_field(name="Рассматривал", value=interaction.user.mention, inline=False)
-            log_embed.timestamp = discord.utils.utcnow()
-            await logs_channel.send(embed=log_embed)
-
+    results_msg_id = ticket_data.get("results_msg_id")
+    if results_msg_id and results_channel:
         try:
-            col = get_tickets_collection()
-            col.delete_one({"channel_id": str(self.ticket_channel.id)})
-        except Exception as e:
-            print(f"[ERROR] MongoDB: {e}")
+            msg = await results_channel.fetch_message(int(results_msg_id))
+            await msg.delete()
+        except Exception:
+            pass
 
-        await self.ticket_channel.delete()
+    applicant_mention = applicant.mention if applicant else f"`{applicant_name}` (вышел с сервера)"
+
+    embed = discord.Embed(color=0x57f287)
+    embed.description = (
+        f"Заявка пользователя {applicant_mention}\n\n"
+        f"На вступление в семью была принята! 🎉\n"
+        f"Рассматривал заявку: {interaction.user.mention}"
+    )
+    if results_channel:
+        await results_channel.send(content=applicant_mention, embed=embed)
+
+    if logs_channel:
+        log_embed = discord.Embed(title="Заявка принята", color=0x57f287)
+        log_embed.add_field(name="Пользователь", value=f"{applicant_mention} (`{applicant_name}`)", inline=False)
+        for field in ticket_data.get("fields", []):
+            log_embed.add_field(name=field.get("label", "?"), value=field.get("value") or "-", inline=False)
+        log_embed.add_field(name="Рассматривал", value=interaction.user.mention, inline=False)
+        log_embed.timestamp = discord.utils.utcnow()
+        await logs_channel.send(embed=log_embed)
+
+    try:
+        col = get_tickets_collection()
+        col.delete_one({"channel_id": str(ticket_channel.id)})
+    except Exception as e:
+        print(f"[ERROR] MongoDB: {e}")
+
+    await ticket_channel.delete()
 
 
 class RejectModal(Modal, title="Причина отклонения"):
@@ -266,14 +247,14 @@ class TicketActionsView(View):
             await interaction.response.send_message("данные тикета не найдены", ephemeral=True)
             return
 
+        await interaction.response.defer()
         applicant = await self._resolve_applicant(interaction.guild, ticket_data)
-        await interaction.response.send_modal(
-            AcceptModal(
-                applicant=applicant,
-                applicant_name=ticket_data.get("applicant_name", "?"),
-                ticket_channel=interaction.channel,
-                ticket_data=ticket_data,
-            )
+        await _process_accept(
+            interaction,
+            applicant=applicant,
+            applicant_name=ticket_data.get("applicant_name", "?"),
+            ticket_channel=interaction.channel,
+            ticket_data=ticket_data,
         )
 
     @discord.ui.button(label="Взять на рассмотрение", style=discord.ButtonStyle.blurple, custom_id="ticket_review")
